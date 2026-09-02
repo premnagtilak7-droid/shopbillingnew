@@ -1,50 +1,48 @@
 # BillFlow
 
-BillFlow is a responsive React + Vite point-of-sale and GST billing workspace for small shops.
+BillFlow is a modern React + Vite POS and GST billing workspace for small shops, with Supabase-backed authentication and product lookup when configured.
 
 ## Completed features
-- Supabase Auth login and signup with email-confirmation handling, validation, and friendly errors.
-- Safe preview fallback when `VITE_SUPABASE_URL` or `VITE_SUPABASE_ANON_KEY` are not configured.
-- Role-based navigation and route guards for Owner, Employee, and Customer roles.
-- Owner-only overview, reports, customer management, and settings; Employee POS access; Customer invoice history access.
-- Continuous camera barcode scanning with the browser `BarcodeDetector` API, plus manual barcode/SKU entry.
-- Product search, instant cart add/increment, quantity controls, item removal, subtotal, GST, and total calculations.
-- Digital invoice creation and public shareable `/invoice/:id` receipt routes that load without authentication.
-- Responsive desktop, tablet, and mobile POS layout.
-- Netlify SPA redirect configuration for client-side routes.
+- Supabase Auth login/signup with `full_name` and `role` metadata, email-confirmation-safe handling, session restoration, auth state listener, and profile lookup from `public.profiles`.
+- Explicit demo fallback when Supabase environment variables are unavailable.
+- Supabase `public.products` lookup for barcode/SKU scanning and catalog loading, with seeded preview fallback.
+- Continuous browser camera scanning using `BarcodeDetector`, manual SKU/barcode entry, instant feedback, duplicate quantity increments, GST/subtotal/total calculations, and cart controls.
+- Owner, Employee, and Customer role-aware navigation and route guards.
+- Owner overview, sales reporting, inventory/barcode manager, customer/settings areas; Employee quick billing counter; Customer invoice access.
+- Low-stock alert counts and inventory badges.
+- Quick UPI/Cash/Card checkout modal with UPI deep link and QR payment display.
+- Public `/receipt/:id` and `/invoice/:id` receipt routes with itemized totals, payment status, QR viewing code, copy link, printable-friendly layout, and WhatsApp share link.
+- Persisted preview invoices in localStorage, dark/light theme toggle, responsive desktop/tablet/mobile UI, and Netlify SPA rewrites.
 
 ## Entry routes
-- `/` — Owner overview dashboard.
-- `/pos` — Owner/Employee POS, scanner, product search, and cart.
-- `/invoices` — Searchable invoice list available to signed-in users.
-- `/invoice/:id` — Shareable itemized digital invoice; public read-only route.
-- `/customers` — Owner-only customer management area.
-- `/reports` — Owner-only sales analytics area.
-- `/settings` — Owner-only workspace configuration area.
+- `/` — Owner dashboard and recent invoices.
+- `/pos` — Owner/Employee quick billing counter.
+- `/inventory` — Owner/Employee inventory and barcode manager.
+- `/invoices` — Signed-in invoice list.
+- `/invoice/:id` and `/receipt/:id` — Public digital receipt routes.
+- `/customers`, `/reports`, `/settings` — Owner-only portals.
 
-## Environment
-Copy `.env.example` to `.env.local` and provide:
+## Environment and Supabase schema
+Copy `.env.example` to `.env.local`:
 ```bash
 VITE_SUPABASE_URL=https://your-project.supabase.co
 VITE_SUPABASE_ANON_KEY=your-anon-key
 ```
-If either value is missing, the app intentionally runs in browser-only demo mode and displays a visible notice. Configure Supabase Auth email settings as desired; signup automatically signs in when a session is returned, otherwise the UI asks the user to confirm their email.
-
-## Data architecture
-- Supabase Auth is used when configured; role is read from `user_metadata.role`.
-- Demo products and invoice data are local seeded data.
-- Demo invoices persist in browser `localStorage` so the preview works without a backend.
-- Production persistence should be connected to Supabase tables/RLS before handling real billing data. Recommended tables: `profiles (id, role)`, `products`, `invoices`, and `invoice_items`.
+Recommended Supabase tables and policies:
+- `profiles(id uuid primary key references auth.users, full_name text, role text)`
+- `products(id, sku, barcode, name, price, tax/tax_rate, stock/inventory_count)`
+- `invoices` with `invoice_items` relation and fields for customer, totals, status, and payment method.
+Enable RLS and policies appropriate to the Owner/Employee/Customer roles before handling production billing data.
 
 ## User guide
-1. Log in or create an account. In preview mode, select a role on the signup form.
-2. Owners and Employees open **POS billing**, start the camera, or enter a barcode/SKU manually.
-3. Search results and scans immediately add products to the cart; repeated scans increment quantity.
-4. Review GST and totals, then select **Create invoice**.
-5. Open the generated invoice from **Invoices** and copy its shareable link.
-6. Customers can open an invoice link directly without being trapped on the login screen.
+1. Configure Supabase keys for production, or use demo mode for preview testing.
+2. Log in/sign up and select a role in demo mode.
+3. Open POS billing, start the camera, or enter a barcode/SKU manually.
+4. Review the cart, GST, and total. Choose Create invoice, then select UPI, Cash, or Card.
+5. Copy the public receipt URL or send it through WhatsApp. Customers can open receipt links without being redirected to login.
+6. Switch between light and dark mode from the top-bar control.
 
-## Development and verification
+## Development
 ```bash
 npm install
 npm run dev
@@ -52,11 +50,10 @@ npm run lint
 npm run build
 npm run preview
 ```
-
-Vite preview hosts are configured with `server.allowedHosts: true` for GenSpark sandbox hostnames.
+Vite is configured with `server.allowedHosts: true` for GenSpark sandbox hostnames.
 
 ## Deployment
-- **Stack:** React 19, Vite 8, React Router, Tailwind CSS 4 tooling, Supabase JS.
-- **Target:** Netlify via GitHub automatic deployment (`netlify.toml` publishes `dist` and rewrites SPA routes).
-- **Status:** Build and lint verified locally; production deployment requires the connected Netlify/GitHub pipeline and environment variables.
-- **Repository:** `https://github.com/shopbilling07-ship-it/shopbilling.git`
+- **Stack:** React 19, Vite 8, React Router, Tailwind CSS tooling, Supabase JS.
+- **Target:** Netlify through the connected GitHub repository. `netlify.toml` builds `dist` and rewrites client routes to `index.html`.
+- **Status:** Lint and production build verified locally.
+- **Repository:** https://github.com/shopbilling07-ship-it/shopbilling
