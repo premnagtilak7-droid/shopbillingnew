@@ -1,16 +1,44 @@
-# React + Vite
+# BillFlow
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+BillFlow is a lightweight React + Vite shop billing dashboard for GST-ready invoice tracking.
 
-Currently, two official plugins are available:
+## Current features
+- Dashboard overview with revenue, invoice, customer, and pending-payment stats.
+- Revenue overview visualization and recent invoice activity.
+- Invoice list with search, status labels, and responsive table layout.
+- Create-invoice flow with local browser state for immediate feedback.
+- Customers, Reports, and Settings sections with useful empty states and actions.
+- Responsive layout for desktop, tablet, and mobile screens.
+- BillFlow favicon and Inter/DM Sans typography styling.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Entry routes
+- `/` — Overview dashboard.
+- `/invoices` — Searchable invoice list.
+- `/customers` — Customer management starter view.
+- `/reports` — Business reporting starter view.
+- `/settings` — Business profile settings form.
 
-## React Compiler
+## Data architecture
+The restored frontend currently uses seeded in-memory demo data so the interface can be previewed without credentials. Supabase is listed as a dependency and `.env.example` documents the project credentials for a future persistence/authentication integration. No customer or invoice data is sent to a backend by the current UI.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## User guide
+Open the Overview page to review shop activity. Use **Create invoice** to add an invoice, then find it from the Invoices route. Use the sidebar to switch between invoices, customers, reports, and business settings. The current create and save actions are local demo interactions.
 
-## Expanding the ESLint configuration
+## Not yet implemented
+- Supabase authentication and persistent invoice/customer storage.
+- PDF invoice generation, barcode/QR rendering, GST tax calculations, and WhatsApp reminders.
+- Production reporting queries and multi-user permissions.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## Development
+```bash
+npm install
+npm run dev
+npm run build
+npm run preview
+```
+
+## Deployment
+- **Stack:** React 19, Vite 8, React Router, Tailwind CSS 4 tooling.
+- **Configured target:** Vercel SPA rewrite via `vercel.json`.
+- **Status:** Repaired locally; production deployment has not been run in this session.
+- **Repository:** `https://github.com/shopbilling07-ship-it/shopbilling.git`
