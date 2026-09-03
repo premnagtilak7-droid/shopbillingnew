@@ -34,6 +34,17 @@ async function findProduct(key) {
   return products.find(item => item.barcode === normalized || item.sku.toLowerCase() === normalized.toLowerCase()) || null
 }
 
+function isMissingProductColumn(error) {
+  return /cost_price|min_stock_alert|schema cache|column .* does not exist|could not find the .* column/i.test(error?.message || '')
+}
+
+function legacyProductPayload(product) {
+  const legacyProduct = { ...product }
+  delete legacyProduct.cost_price
+  delete legacyProduct.min_stock_alert
+  return legacyProduct
+}
+
 async function loadProducts(workspaceId) {
   if (!supabase) return products
   let query = supabase.from('products').select('*').order('name')
@@ -352,12 +363,18 @@ function App() { const [user, setUser] = useState(() => supabase ? null : getDem
       return true
     }
     const payload = { ...product, ...(user?.workspace_id ? { workspace_id: user.workspace_id } : {}) }
-    const { data: created, error } = await supabase.from('products').insert(payload).select('*').single()
+    let { data: created, error } = await supabase.from('products').insert(payload).select('*').single()
+    if (error && isMissingProductColumn(error)) {
+      const result = await supabase.from('products').insert(legacyProductPayload(payload)).select('*').single()
+      created = result.data
+      error = result.error
+      if (!error) toast('Saved with legacy product columns. Add cost_price and min_stock_alert to Supabase to persist those fields.', { icon: 'i' })
+    }
     if (error) {
       toast.error(`Failed to add product: ${error.message}`)
       return false
     }
-    const normalized = { ...created, price: Number(created.price), cost_price: Number(created.cost_price ?? created.costPrice ?? 0), tax: Number(created.tax ?? created.tax_rate ?? 0), stock: created.stock == null ? null : Number(created.stock), min_stock_alert: Number(created.min_stock_alert ?? 10) }
+    const normalized = { ...product, ...created, price: Number(created.price), cost_price: Number(created.cost_price ?? product.cost_price ?? 0), tax: Number(created.tax ?? created.tax_rate ?? 0), stock: created.stock == null ? null : Number(created.stock), min_stock_alert: Number(created.min_stock_alert ?? product.min_stock_alert ?? 10) }
     setCatalog(current => [normalized, ...current])
     toast.success('Product added to inventory')
     return true
@@ -369,14 +386,22 @@ function App() { const [user, setUser] = useState(() => supabase ? null : getDem
       return true
     }
     const target = catalog.find(item => (item.id || item.sku) === id)
-    let query = supabase.from('products').update(product).eq(target?.id ? 'id' : 'sku', id)
-    if (user?.workspace_id) query = query.eq('workspace_id', user.workspace_id)
-    const { data: updated, error } = await query.select('*').single()
+    const matchesTarget = query => {
+      let nextQuery = query.eq(target?.id ? 'id' : 'sku', id)
+      return user?.workspace_id ? nextQuery.eq('workspace_id', user.workspace_id) : nextQuery
+    }
+    let { data: updated, error } = await matchesTarget(supabase.from('products').update(product)).select('*').single()
+    if (error && isMissingProductColumn(error)) {
+      const result = await matchesTarget(supabase.from('products').update(legacyProductPayload(product))).select('*').single()
+      updated = result.data
+      error = result.error
+      if (!error) toast('Saved with legacy product columns. Add cost_price and min_stock_alert to Supabase to persist those fields.', { icon: 'i' })
+    }
     if (error) {
       toast.error(`Failed to update product: ${error.message}`)
       return false
     }
-    const normalized = { ...updated, price: Number(updated.price), tax: Number(updated.tax ?? updated.tax_rate ?? 0), stock: updated.stock == null ? null : Number(updated.stock) }
+    const normalized = { ...product, ...updated, price: Number(updated.price), cost_price: Number(updated.cost_price ?? product.cost_price ?? 0), tax: Number(updated.tax ?? updated.tax_rate ?? 0), stock: updated.stock == null ? null : Number(updated.stock), min_stock_alert: Number(updated.min_stock_alert ?? product.min_stock_alert ?? 10) }
     setCatalog(current => current.map(item => (item.id || item.sku) === id ? normalized : item))
     toast.success('Product updated')
     return true
