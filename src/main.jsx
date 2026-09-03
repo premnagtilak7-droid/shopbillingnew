@@ -90,7 +90,87 @@ function Scanner({ onCode }) { const scannerRef = useRef(null); const [active, s
 
 function Cart({ cart, setCart, onCheckout }) { const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0); const tax = cart.reduce((sum, item) => sum + item.price * item.quantity * item.tax / 100, 0); const total = subtotal + tax; const change = (sku, amount) => setCart(items => items.map(item => item.sku === sku ? { ...item, quantity: Math.max(0, item.quantity + amount) } : item).filter(item => item.quantity)); return <section className="panel cart-panel"><div className="panel-heading"><div><h3>Current cart</h3><p className="muted">{cart.reduce((sum, item) => sum + item.quantity, 0)} items</p></div><button className="text-btn" onClick={() => setCart([])}>Clear</button></div>{cart.length === 0 ? <div className="empty-friendly compact"><Icon name="invoice" size={28}/><p>Scan or search products to begin.</p></div> : <div className="cart-lines">{cart.map(item => <div className="cart-line" key={item.sku}><div><strong>{item.name}</strong><small>{item.sku} · {money(item.price)} + {item.tax}% GST</small></div><div className="quantity"><button onClick={() => change(item.sku, -1)}>−</button><b>{item.quantity}</b><button onClick={() => change(item.sku, 1)}>+</button></div><strong>{money(item.price * item.quantity)}</strong></div>)}</div>}<div className="totals"><div><span>Subtotal</span><b>{money(subtotal)}</b></div><div><span>GST</span><b>{money(tax)}</b></div><div className="grand-total"><span>Total</span><strong>{money(total)}</strong></div></div><button className="primary-btn full" disabled={!cart.length} onClick={() => onCheckout({ subtotal, tax, total })}>Create invoice</button></section> }
 
-function POS({ onInvoice, catalog }) { const [cart, setCart] = useState([]); const [manual, setManual] = useState(''); const [lastCode, setLastCode] = useState(''); const [paymentOpen, setPaymentOpen] = useState(false); const [checkoutSummary, setCheckoutSummary] = useState(null); const add = product => { setCart(items => items.some(item => item.sku === product.sku) ? items.map(item => item.sku === product.sku ? { ...item, quantity: item.quantity + 1 } : item) : [...items, { ...product, quantity: 1 }]); setManual(''); setLastCode(product.barcode); navigator.vibrate?.(60); toast.success(`${product.name} added`) }; const code = async value => { const normalized = String(value || '').trim(); if (!normalized || normalized === lastCode) return; const product = await findProduct(normalized); if (product) add(product); else toast.error('No product matches that barcode or SKU') }; const checkout = summary => { setCheckoutSummary(summary); setPaymentOpen(true) }; const complete = payment => { onInvoice({ customer: 'Walk-in customer', items: cart, ...checkoutSummary, payment, status: 'Paid' }); setCart([]); setPaymentOpen(false); toast.success('Payment recorded and receipt created') }; return <><section className="page-intro"><div><p className="muted">Quick Billing Counter <span className="live-dot">● Live</span></p></div><div className="low-stock-summary">{catalog.filter(item => item.stock != null && item.stock < 10).length} low-stock alerts</div></section><div className="pos-grid"><div><Scanner onCode={code}/><div className="panel manual-entry"><label>Manual barcode / SKU entry<div className="inline-form"><input value={manual} onChange={event => setManual(event.target.value)} onKeyDown={event => event.key === 'Enter' && code(manual)} placeholder="8901234567890 or RICE-5KG" autoFocus/><button className="primary-btn" onClick={() => code(manual)}>Add item</button></div></label></div><ProductSearch onAdd={add} products={catalog}/></div><Cart cart={cart} setCart={setCart} onCheckout={checkout}/></div>{paymentOpen && <PaymentModal total={checkoutSummary?.total || 0} onClose={() => setPaymentOpen(false)} onComplete={complete}/>}</> }
+function POS({ onInvoice, catalog }) {
+  const [cart, setCart] = useState([])
+  const [manual, setManual] = useState('')
+  const [paymentOpen, setPaymentOpen] = useState(false)
+  const [checkoutSummary, setCheckoutSummary] = useState(null)
+  const barcodeBuffer = useRef('')
+  const lastBarcodeKeyAt = useRef(0)
+  const scanTimer = useRef(null)
+
+  const add = product => {
+    setCart(items => items.some(item => item.sku === product.sku)
+      ? items.map(item => item.sku === product.sku ? { ...item, quantity: item.quantity + 1 } : item)
+      : [...items, { ...product, quantity: 1 }])
+    setManual('')
+    navigator.vibrate?.(60)
+    toast.success(`${product.name} added`)
+  }
+
+  const code = async value => {
+    const normalized = String(value || '').trim()
+    if (!normalized) return
+    const product = await findProduct(normalized)
+    if (product) add(product)
+    else toast.error(`No product matches “${normalized}”`)
+  }
+
+  useEffect(() => {
+    const handleBarcodeKeyDown = event => {
+      const now = Date.now()
+      const printable = event.key.length === 1
+      const elapsed = lastBarcodeKeyAt.current ? now - lastBarcodeKeyAt.current : 0
+      const rapid = elapsed > 0 && elapsed <= 120
+
+      if (event.key === 'Enter') {
+        const scan = barcodeBuffer.current.trim()
+        if (scan.length >= 4 && rapid) {
+          event.preventDefault()
+          event.stopPropagation()
+          code(scan)
+        }
+        barcodeBuffer.current = ''
+        lastBarcodeKeyAt.current = 0
+        return
+      }
+
+      if (!printable) return
+      if (!lastBarcodeKeyAt.current || elapsed > 120) {
+        barcodeBuffer.current = event.key
+      } else {
+        barcodeBuffer.current += event.key
+      }
+      lastBarcodeKeyAt.current = now
+
+      clearTimeout(scanTimer.current)
+      scanTimer.current = setTimeout(() => {
+        barcodeBuffer.current = ''
+        lastBarcodeKeyAt.current = 0
+      }, 180)
+    }
+
+    window.addEventListener('keydown', handleBarcodeKeyDown, true)
+    return () => {
+      window.removeEventListener('keydown', handleBarcodeKeyDown, true)
+      clearTimeout(scanTimer.current)
+    }
+  })
+
+  const checkout = summary => { setCheckoutSummary(summary); setPaymentOpen(true) }
+  const complete = payment => {
+    onInvoice({ customer: 'Walk-in customer', items: cart, ...checkoutSummary, payment, status: 'Paid' })
+    setCart([])
+    setPaymentOpen(false)
+    toast.success('Payment recorded and receipt created')
+  }
+
+  return <>
+    <section className="page-intro"><div><p className="muted">Quick Billing Counter <span className="live-dot">● Live</span></p><small className="muted">USB/Bluetooth gun ready · scan a barcode ending with Enter</small></div><div className="low-stock-summary">{catalog.filter(item => item.stock != null && item.stock < 10).length} low-stock alerts</div></section>
+    <div className="pos-grid"><div><Scanner onCode={code}/><div className="panel manual-entry"><label>Manual barcode / SKU entry<div className="inline-form"><input value={manual} onChange={event => setManual(event.target.value)} onKeyDown={event => event.key === 'Enter' && code(manual)} placeholder="8901234567890 or RICE-5KG" autoFocus/><button className="primary-btn" onClick={() => code(manual)}>Add item</button></div></label></div><ProductSearch onAdd={add} products={catalog}/></div><Cart cart={cart} setCart={setCart} onCheckout={checkout}/></div>
+    {paymentOpen && <PaymentModal total={checkoutSummary?.total || 0} onClose={() => setPaymentOpen(false)} onComplete={complete}/>}
+  </>
+}
 
 function PaymentModal({ total, onClose, onComplete }) { const [method, setMethod] = useState('UPI'); const upiLink = `upi://pay?pa=billflow@upi&pn=BillFlow&am=${total}&cu=INR`; return <div className="modal-backdrop"><section className="modal payment-modal"><div className="modal-head"><div><p className="eyebrow">SECURE CHECKOUT</p><h3>Collect {money(total)}</h3></div><button className="close-btn" onClick={onClose}><Icon name="close"/></button></div><div className="payment-methods">{['UPI', 'Cash', 'Card'].map(item => <button key={item} className={method === item ? 'selected' : ''} onClick={() => setMethod(item)}>{item}</button>)}</div>{method === 'UPI' && <div className="upi-panel"><div className="qr-placeholder">QR</div><p>Scan with any UPI app</p><a href={upiLink}>Open UPI payment</a></div>}<button className="primary-btn full" onClick={() => onComplete(method)}><Icon name="check" size={16}/> Mark {method} paid</button></section></div> }
 function Inventory({ catalog }) { return <><section className="page-intro"><div><p className="muted">Inventory & Barcode Manager</p></div></section><section className="panel invoice-page-panel"><div className="product-results">{catalog.map(item => <div className="inventory-row" key={item.sku}><span><strong>{item.name}</strong><small>{item.sku} · {item.barcode}</small></span><span className={item.stock != null && item.stock < 10 ? 'stock-low' : 'stock-ok'}>{item.stock == null ? 'Tracked in Supabase' : `${item.stock} in stock`}</span></div>)}</div></section></> }
