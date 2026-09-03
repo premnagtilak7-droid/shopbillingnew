@@ -35,14 +35,38 @@ async function findProduct(key) {
 }
 
 function isMissingProductColumn(error) {
-  return /cost_price|min_stock_alert|schema cache|column .* does not exist|could not find the .* column/i.test(error?.message || '')
+  return /schema cache|column .* does not exist|could not find the .* column/i.test(error?.message || '')
 }
 
-function legacyProductPayload(product) {
-  const legacyProduct = { ...product }
-  delete legacyProduct.cost_price
-  delete legacyProduct.min_stock_alert
-  return legacyProduct
+function missingColumnName(error) {
+  const match = String(error?.message || '').match(/(?:the\s+)?['"]([^'"]+)['"]\s+column/i)
+  return match?.[1] || null
+}
+
+async function insertProductWithSchemaFallback(payload) {
+  let candidate = { ...payload }
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const result = await supabase.from('products').insert(candidate).select('*').single()
+    if (!result.error) return result
+    const column = missingColumnName(result.error)
+    if (!isMissingProductColumn(result.error) || !column || !(column in candidate)) return result
+    delete candidate[column]
+  }
+  return { data: null, error: new Error('The products table has too many unsupported columns. Check its schema.') }
+}
+
+async function updateProductWithSchemaFallback(product, target, id, workspaceId) {
+  let candidate = { ...product }
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    let query = supabase.from('products').update(candidate).eq(target?.id ? 'id' : 'sku', id)
+    if (workspaceId) query = query.eq('workspace_id', workspaceId)
+    const result = await query.select('*').single()
+    if (!result.error) return result
+    const column = missingColumnName(result.error)
+    if (!isMissingProductColumn(result.error) || !column || !(column in candidate)) return result
+    delete candidate[column]
+  }
+  return { data: null, error: new Error('The products table has too many unsupported columns. Check its schema.') }
 }
 
 async function loadProducts(workspaceId) {
@@ -363,13 +387,7 @@ function App() { const [user, setUser] = useState(() => supabase ? null : getDem
       return true
     }
     const payload = { ...product, ...(user?.workspace_id ? { workspace_id: user.workspace_id } : {}) }
-    let { data: created, error } = await supabase.from('products').insert(payload).select('*').single()
-    if (error && isMissingProductColumn(error)) {
-      const result = await supabase.from('products').insert(legacyProductPayload(payload)).select('*').single()
-      created = result.data
-      error = result.error
-      if (!error) toast('Saved with legacy product columns. Add cost_price and min_stock_alert to Supabase to persist those fields.', { icon: 'i' })
-    }
+    const { data: created, error } = await insertProductWithSchemaFallback(payload)
     if (error) {
       toast.error(`Failed to add product: ${error.message}`)
       return false
@@ -386,17 +404,7 @@ function App() { const [user, setUser] = useState(() => supabase ? null : getDem
       return true
     }
     const target = catalog.find(item => (item.id || item.sku) === id)
-    const matchesTarget = query => {
-      let nextQuery = query.eq(target?.id ? 'id' : 'sku', id)
-      return user?.workspace_id ? nextQuery.eq('workspace_id', user.workspace_id) : nextQuery
-    }
-    let { data: updated, error } = await matchesTarget(supabase.from('products').update(product)).select('*').single()
-    if (error && isMissingProductColumn(error)) {
-      const result = await matchesTarget(supabase.from('products').update(legacyProductPayload(product))).select('*').single()
-      updated = result.data
-      error = result.error
-      if (!error) toast('Saved with legacy product columns. Add cost_price and min_stock_alert to Supabase to persist those fields.', { icon: 'i' })
-    }
+    const { data: updated, error } = await updateProductWithSchemaFallback(product, target, id, user?.workspace_id)
     if (error) {
       toast.error(`Failed to update product: ${error.message}`)
       return false
