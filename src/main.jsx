@@ -6,6 +6,7 @@ import { createClient } from '@supabase/supabase-js'
 import { QRCodeSVG } from 'qrcode.react'
 import { Html5Qrcode } from 'html5-qrcode'
 import JsBarcode from 'jsbarcode'
+import ErrorBoundary from './components/ErrorBoundary'
 import { useBarcodeScanner, playBarcodeBeep } from './hooks/useBarcodeScanner'
 import { CartesianGrid, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis, Cell } from 'recharts'
 import toast, { Toaster } from 'react-hot-toast'
@@ -144,7 +145,18 @@ const seedInvoices = [
   { id: 'INV-1048', customer: 'Aarav Mehta', date: '02 Sep 2026', items: [{ ...products[0], quantity: 2 }], status: 'Paid', payment: 'UPI' },
   { id: 'INV-1047', customer: 'Priya Shah', date: '01 Sep 2026', items: [{ ...products[2], quantity: 2 }], status: 'Pending', payment: 'Cash' },
 ]
-const money = value => `₹${Math.round(value).toLocaleString('en-IN')}`
+const money = value => `₹${Math.round(Number(value || 0)).toLocaleString('en-IN')}`
+const normalizeScannedProduct = product => ({
+  ...product,
+  price: Number(product?.price || 0),
+  cost_price: Number(product?.cost_price || 0),
+  tax_rate: Number(product?.tax_rate ?? product?.tax ?? 0),
+  tax: Number(product?.tax ?? product?.tax_rate ?? 0),
+  stock: Number(product?.stock || 0),
+  barcode: String(product?.barcode || ''),
+  name: String(product?.name || 'Unnamed Item'),
+  sku: String(product?.sku || product?.barcode || product?.name || 'ITEM')
+})
 const initials = name => name.split(' ').map(part => part[0]).join('').slice(0, 2).toUpperCase()
 const getDemoUser = () => {
   try { return JSON.parse(localStorage.getItem('billflow-user')) || null } catch { return null }
@@ -221,7 +233,14 @@ function CameraScannerModal({ onCode, onClose }) {
     start()
     return () => {
       mounted = false
-      if (scannerRef.current) scannerRef.current.stop().catch(() => {}).finally(() => scannerRef.current?.clear().catch(() => {}))
+      const scanner = scannerRef.current
+      scannerRef.current = null
+      if (scanner) {
+        ;(async () => {
+          try { await scanner.stop() } catch (error) { console.warn('Camera stop failed:', error) }
+          try { await scanner.clear() } catch (error) { console.warn('Camera cleanup failed:', error) }
+        })()
+      }
     }
   }, [onCode])
 
@@ -233,7 +252,7 @@ function Scanner({ onCode }) {
   return <section className="scanner panel"><div className="panel-heading"><div><h3>Barcode scanner</h3><p className="muted">Use your device camera as a fallback</p></div><button className="secondary-btn" onClick={() => setOpen(true)}><Icon name="camera" size={16}/> Open camera</button></div>{open && <CameraScannerModal onCode={onCode} onClose={() => setOpen(false)}/>}<div className="camera-placeholder compact-placeholder"><Icon name="camera" size={26}/><span>USB/Bluetooth scanner and manual entry are also supported.</span></div></section>
 }
 
-function Cart({ cart, setCart, onCheckout }) { const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0); const tax = cart.reduce((sum, item) => sum + item.price * item.quantity * item.tax / 100, 0); const total = subtotal + tax; const change = (sku, amount) => setCart(items => items.map(item => item.sku === sku ? { ...item, quantity: Math.max(0, item.quantity + amount) } : item).filter(item => item.quantity)); return <section className="panel cart-panel"><div className="panel-heading"><div><h3>Current cart</h3><p className="muted">{cart.reduce((sum, item) => sum + item.quantity, 0)} items</p></div><button className="text-btn" onClick={() => setCart([])}>Clear</button></div>{cart.length === 0 ? <div className="empty-friendly compact"><Icon name="invoice" size={28}/><p>Scan or search products to begin.</p></div> : <div className="cart-lines">{cart.map(item => <div className="cart-line" key={item.sku}><div><strong>{item.name}</strong><small>{item.sku} · {money(item.price)} + {item.tax}% GST</small></div><div className="quantity"><button onClick={() => change(item.sku, -1)}>−</button><b>{item.quantity}</b><button onClick={() => change(item.sku, 1)}>+</button></div><strong>{money(item.price * item.quantity)}</strong></div>)}</div>}<div className="totals"><div><span>Subtotal</span><b>{money(subtotal)}</b></div><div><span>GST</span><b>{money(tax)}</b></div><div className="grand-total"><span>Total</span><strong>{money(total)}</strong></div></div><button className="primary-btn full" disabled={!cart.length} onClick={() => onCheckout({ subtotal, tax, total })}>Create invoice</button></section> }
+function Cart({ cart, setCart, onCheckout }) { const subtotal = cart.reduce((sum, item) => sum + Number(item?.price || 0) * Number(item?.quantity || 0), 0); const tax = cart.reduce((sum, item) => sum + Number(item?.price || 0) * Number(item?.quantity || 0) * Number(item?.tax_rate ?? item?.tax ?? 0) / 100, 0); const total = subtotal + tax; const change = (sku, amount) => setCart(items => items.map(item => item.sku === sku ? { ...item, quantity: Math.max(0, Number(item.quantity || 0) + amount) } : item).filter(item => item.quantity)); return <section className="panel cart-panel"><div className="panel-heading"><div><h3>Current cart</h3><p className="muted">{cart.reduce((sum, item) => sum + Number(item?.quantity || 0), 0)} items</p></div><button className="text-btn" onClick={() => setCart([])}>Clear</button></div>{cart.length === 0 ? <div className="empty-friendly compact"><Icon name="invoice" size={28}/><p>Scan or search products to begin.</p></div> : <div className="cart-lines">{cart.map(item => <div className="cart-line" key={item.sku}><div><strong>{item.name || 'Unnamed Item'}</strong><small>{item.sku || '—'} · {money(item.price)} + {Number(item.tax_rate ?? item.tax ?? 0)}% GST</small></div><div className="quantity"><button onClick={() => change(item.sku, -1)}>−</button><b>{item.quantity || 0}</b><button onClick={() => change(item.sku, 1)}>+</button></div><strong>{money(Number(item?.price || 0) * Number(item?.quantity || 0))}</strong></div>)}</div>}<div className="totals"><div><span>Subtotal</span><b>{money(subtotal)}</b></div><div><span>GST</span><b>{money(tax)}</b></div><div className="grand-total"><span>Total</span><strong>{money(total)}</strong></div></div><button className="primary-btn full" disabled={!cart.length} onClick={() => onCheckout({ subtotal, tax, total })}>Create invoice</button></section> }
 
 function POS({ onInvoice, catalog }) {
   const [cart, setCart] = useState([])
@@ -242,21 +261,29 @@ function POS({ onInvoice, catalog }) {
   const [checkoutSummary, setCheckoutSummary] = useState(null)
   const [receiptData, setReceiptData] = useState(null)
   const add = product => {
-    setCart(items => items.some(item => item.sku === product.sku)
-      ? items.map(item => item.sku === product.sku ? { ...item, quantity: item.quantity + 1 } : item)
-      : [...items, { ...product, quantity: 1 }])
+    const safeProduct = normalizeScannedProduct(product)
+    setCart(items => items.some(item => item.sku === safeProduct.sku)
+      ? items.map(item => item.sku === safeProduct.sku ? { ...item, ...safeProduct, quantity: Number(item.quantity || 0) + 1 } : item)
+      : [...items, { ...safeProduct, quantity: 1 }])
     setManual('')
-    navigator.vibrate?.(60)
-    toast.success(`${product.name} added`)
+    try { navigator.vibrate?.(60) } catch (error) { console.warn('Vibration unavailable:', error) }
+    toast.success(`${safeProduct.name} added`)
   }
 
   const code = async value => {
     const normalized = String(value || '').trim()
     if (!normalized) return
-    const product = await findProduct(normalized)
+    let product
+    try {
+      product = await findProduct(normalized)
+    } catch (error) {
+      console.error('Barcode product lookup failed:', error)
+      toast.error('Unable to look up product')
+      return
+    }
     if (product) {
-      playBarcodeBeep()
-      add(product)
+      try { playBarcodeBeep() } catch (error) { console.warn('Barcode beep unavailable:', error) }
+      add(normalizeScannedProduct(product))
     } else {
       toast.error('Product not found')
     }
@@ -459,6 +486,6 @@ function App() { const [user, setUser] = useState(() => supabase ? null : getDem
     toast.success('Invoice created — inventory updated')
     return true
   }
-  return <BrowserRouter>{user ? <Layout user={user} darkMode={darkMode} onToggleTheme={() => setDarkMode(value => !value)} onLogout={async () => { await supabase?.auth.signOut(); localStorage.removeItem('billflow-user'); setUser(null) }}><Routes><Route path="/" element={<Protected user={user} roles={['Owner']}><Overview invoices={invoices}/></Protected>}/><Route path="/pos" element={<Protected user={user} roles={['Owner', 'Employee']}><POS onInvoice={createInvoice} catalog={catalog}/></Protected>}/><Route path="/invoices" element={<Invoices invoices={invoices}/>}/><Route path="/invoice/:id" element={<InvoiceDetail invoices={invoices}/>}/><Route path="/receipt/:id" element={<InvoiceDetail invoices={invoices}/>}/><Route path="/inventory" element={<Protected user={user} roles={['Owner', 'Employee']}><Inventory catalog={catalog} onCreate={createProduct} onUpdate={updateProduct} onDelete={deleteProduct}/></Protected>}/><Route path="/customers" element={<Protected user={user} roles={['Owner']}><SimplePage title="Customer management" text="Owner-only customer records and billing history."/></Protected>}/><Route path="/reports" element={<Protected user={user} roles={['Owner']}><Reports invoices={invoices}/></Protected>}/><Route path="/settings" element={<Protected user={user} roles={['Owner']}><Settings/></Protected>}/><Route path="*" element={<Navigate to="/invoices" replace/>}/></Routes></Layout> : <Routes><Route path="/invoice/:id" element={<InvoiceDetail invoices={invoices}/>}/><Route path="/receipt/:id" element={<InvoiceDetail invoices={invoices}/>}/><Route path="*" element={<Auth onAuth={nextUser => { localStorage.setItem('billflow-user', JSON.stringify(nextUser)); setUser(nextUser) }}/>}/></Routes>}<Toaster position="bottom-right"/></BrowserRouter> }
+  return <BrowserRouter>{user ? <Layout user={user} darkMode={darkMode} onToggleTheme={() => setDarkMode(value => !value)} onLogout={async () => { await supabase?.auth.signOut(); localStorage.removeItem('billflow-user'); setUser(null) }}><Routes><Route path="/" element={<Protected user={user} roles={['Owner']}><Overview invoices={invoices}/></Protected>}/><Route path="/pos" element={<Protected user={user} roles={['Owner', 'Employee']}><ErrorBoundary><POS onInvoice={createInvoice} catalog={catalog}/></ErrorBoundary></Protected>}/><Route path="/invoices" element={<Invoices invoices={invoices}/>}/><Route path="/invoice/:id" element={<InvoiceDetail invoices={invoices}/>}/><Route path="/receipt/:id" element={<InvoiceDetail invoices={invoices}/>}/><Route path="/inventory" element={<Protected user={user} roles={['Owner', 'Employee']}><Inventory catalog={catalog} onCreate={createProduct} onUpdate={updateProduct} onDelete={deleteProduct}/></Protected>}/><Route path="/customers" element={<Protected user={user} roles={['Owner']}><SimplePage title="Customer management" text="Owner-only customer records and billing history."/></Protected>}/><Route path="/reports" element={<Protected user={user} roles={['Owner']}><Reports invoices={invoices}/></Protected>}/><Route path="/settings" element={<Protected user={user} roles={['Owner']}><Settings/></Protected>}/><Route path="*" element={<Navigate to="/invoices" replace/>}/></Routes></Layout> : <Routes><Route path="/invoice/:id" element={<InvoiceDetail invoices={invoices}/>}/><Route path="/receipt/:id" element={<InvoiceDetail invoices={invoices}/>}/><Route path="*" element={<Auth onAuth={nextUser => { localStorage.setItem('billflow-user', JSON.stringify(nextUser)); setUser(nextUser) }}/>}/></Routes>}<Toaster position="bottom-right"/></BrowserRouter> }
 
-createRoot(document.getElementById('root')).render(<App />)
+createRoot(document.getElementById('root')).render(<ErrorBoundary><App /></ErrorBoundary>)

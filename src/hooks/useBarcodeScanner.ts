@@ -50,18 +50,22 @@ export function useBarcodeScanner(onScan, enabled = true) {
 }
 
 export function playBarcodeBeep() {
-  const AudioContext = window.AudioContext || window.webkitAudioContext
-  if (!AudioContext) return
-  const context = new AudioContext()
-  const oscillator = context.createOscillator()
-  const gain = context.createGain()
-  oscillator.type = 'sine'
-  oscillator.frequency.value = 880
-  gain.gain.setValueAtTime(0.08, context.currentTime)
-  gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + 0.08)
-  oscillator.connect(gain)
-  gain.connect(context.destination)
-  oscillator.start()
-  oscillator.stop(context.currentTime + 0.08)
-  oscillator.addEventListener('ended', () => context.close())
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext
+    if (!AudioContext) return
+    const context = new AudioContext()
+    const oscillator = context.createOscillator()
+    const gain = context.createGain()
+    oscillator.type = 'sine'
+    oscillator.frequency.value = 880
+    gain.gain.setValueAtTime(0.08, context.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + 0.08)
+    oscillator.connect(gain)
+    gain.connect(context.destination)
+    oscillator.start()
+    oscillator.stop(context.currentTime + 0.08)
+    oscillator.addEventListener('ended', () => { try { context.close() } catch {} })
+  } catch (error) {
+    console.warn('Barcode beep blocked by browser:', error)
+  }
 }
