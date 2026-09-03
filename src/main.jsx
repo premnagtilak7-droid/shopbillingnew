@@ -37,8 +37,54 @@ async function loadProducts(workspaceId) {
   let query = supabase.from('products').select('*').order('name')
   if (workspaceId) query = query.eq('workspace_id', workspaceId)
   const { data, error } = await query
-  if (error) { console.warn('Product loading failed:', error.message); return [] }
+  if (error) { toast.error(`Failed to load inventory: ${error.message}`); return [] }
   return (data || []).map(item => ({ ...item, price: Number(item.price), tax: Number(item.tax ?? item.tax_rate ?? 0), stock: Number(item.stock ?? item.inventory_count ?? 0) }))
+}
+
+async function decrementStock(items, workspaceId) {
+  if (!supabase) return { ok: true, updates: items.map(item => ({ id: item.id, sku: item.sku, stock: item.stock == null ? null : Math.max(0, Number(item.stock) - Number(item.quantity)) })) }
+
+  const updates = []
+  for (const item of items) {
+    const quantity = Number(item.quantity || 0)
+    if (!quantity) continue
+    if (item.stock != null && Number(item.stock) < quantity) {
+      toast.error(`Insufficient stock for ${item.name}`)
+      return { ok: false }
+    }
+
+    if (item.id) {
+      const { error: rpcError } = await supabase.rpc('decrement_stock', { product_id: item.id, quantity_sold: quantity })
+      if (!rpcError) {
+        updates.push({ id: item.id, sku: item.sku, stock: item.stock == null ? null : Math.max(0, Number(item.stock) - quantity) })
+        continue
+      }
+      if (/insufficient|stock/i.test(rpcError.message || '')) {
+        toast.error(`Insufficient stock for ${item.name}`)
+        return { ok: false }
+      }
+    }
+
+    const nextStock = item.stock == null ? null : Number(item.stock) - quantity
+    if (nextStock != null && nextStock < 0) {
+      toast.error(`Insufficient stock for ${item.name}`)
+      return { ok: false }
+    }
+    if (nextStock == null) {
+      updates.push({ id: item.id, sku: item.sku, stock: null })
+      continue
+    }
+
+    let updateQuery = supabase.from('products').update({ stock: nextStock }).eq(item.id ? 'id' : 'sku', item.id || item.sku)
+    if (workspaceId) updateQuery = updateQuery.eq('workspace_id', workspaceId)
+    const { data, error } = await updateQuery.select('id, sku, stock').maybeSingle()
+    if (error || !data) {
+      toast.error(error?.message || `Failed to update inventory for ${item.name}`)
+      return { ok: false }
+    }
+    updates.push({ id: data.id, sku: data.sku || item.sku, stock: Number(data.stock) })
+  }
+  return { ok: true, updates }
 }
 
 async function loadInvoices(workspaceId) {
@@ -161,8 +207,9 @@ function POS({ onInvoice, catalog }) {
   })
 
   const checkout = summary => { setCheckoutSummary(summary); setPaymentOpen(true) }
-  const complete = payment => {
-    onInvoice({ customer: 'Walk-in customer', items: cart, ...checkoutSummary, payment, status: 'Paid' })
+  const complete = async payment => {
+    const saved = await onInvoice({ customer: 'Walk-in customer', items: cart, ...checkoutSummary, payment, status: 'Paid' })
+    if (!saved) return
     setCart([])
     setPaymentOpen(false)
     toast.success('Payment recorded and receipt created')
@@ -176,7 +223,41 @@ function POS({ onInvoice, catalog }) {
 }
 
 function PaymentModal({ total, onClose, onComplete }) { const [method, setMethod] = useState('UPI'); const upiLink = `upi://pay?pa=billflow@upi&pn=BillFlow&am=${total}&cu=INR`; return <div className="modal-backdrop"><section className="modal payment-modal"><div className="modal-head"><div><p className="eyebrow">SECURE CHECKOUT</p><h3>Collect {money(total)}</h3></div><button className="close-btn" onClick={onClose}><Icon name="close"/></button></div><div className="payment-methods">{['UPI', 'Cash', 'Card'].map(item => <button key={item} className={method === item ? 'selected' : ''} onClick={() => setMethod(item)}>{item}</button>)}</div>{method === 'UPI' && <div className="upi-panel"><div className="qr-placeholder">QR</div><p>Scan with any UPI app</p><a href={upiLink}>Open UPI payment</a></div>}<button className="primary-btn full" onClick={() => onComplete(method)}><Icon name="check" size={16}/> Mark {method} paid</button></section></div> }
-function Inventory({ catalog }) { return <><section className="page-intro"><div><p className="muted">Inventory & Barcode Manager</p></div></section><section className="panel invoice-page-panel"><div className="product-results">{catalog.map(item => <div className="inventory-row" key={item.sku}><span><strong>{item.name}</strong><small>{item.sku} · {item.barcode}</small></span><span className={item.stock != null && item.stock < 10 ? 'stock-low' : 'stock-ok'}>{item.stock == null ? 'Tracked in Supabase' : `${item.stock} in stock`}</span></div>)}</div></section></> }
+function Inventory({ catalog, onCreate, onUpdate, onDelete }) {
+  const emptyForm = { name: '', sku: '', barcode: '', price: '', tax: '18', stock: '' }
+  const [form, setForm] = useState(emptyForm)
+  const [editingId, setEditingId] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  const submit = async event => {
+    event.preventDefault()
+    if (!form.name.trim() || !form.sku.trim() || form.price === '') {
+      toast.error('Name, SKU, and price are required')
+      return
+    }
+    setBusy(true)
+    const product = { ...form, name: form.name.trim(), sku: form.sku.trim(), barcode: form.barcode.trim(), price: Number(form.price), tax: Number(form.tax || 0), stock: form.stock === '' ? null : Number(form.stock) }
+    const saved = editingId ? await onUpdate(editingId, product) : await onCreate(product)
+    setBusy(false)
+    if (saved) {
+      setForm(emptyForm)
+      setEditingId(null)
+    }
+  }
+
+  const edit = item => {
+    setEditingId(item.id || item.sku)
+    setForm({ name: item.name || '', sku: item.sku || '', barcode: item.barcode || '', price: String(item.price ?? ''), tax: String(item.tax ?? 0), stock: item.stock == null ? '' : String(item.stock) })
+  }
+
+  return <>
+    <section className="page-intro"><div><p className="muted">Inventory & Barcode Manager</p><small className="muted">Live product catalog from Supabase</small></div></section>
+    <section className="panel invoice-page-panel inventory-manager">
+      <form className="inventory-form" onSubmit={submit}><h3>{editingId ? 'Edit product' : 'Add product'}</h3><div className="form-grid"><label>Product name<input value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} placeholder="Premium Rice 5kg" required /></label><label>SKU<input value={form.sku} onChange={event => setForm({ ...form, sku: event.target.value })} placeholder="RICE-5KG" required /></label><label>Barcode<input value={form.barcode} onChange={event => setForm({ ...form, barcode: event.target.value })} placeholder="8901234567890" /></label><label>Price<input type="number" min="0" step="0.01" value={form.price} onChange={event => setForm({ ...form, price: event.target.value })} required /></label><label>GST %<input type="number" min="0" step="0.01" value={form.tax} onChange={event => setForm({ ...form, tax: event.target.value })} /></label><label>Stock<input type="number" min="0" step="1" value={form.stock} onChange={event => setForm({ ...form, stock: event.target.value })} placeholder="Leave blank if untracked" /></label></div><div className="form-actions"><button className="primary-btn" disabled={busy}>{busy ? 'Saving…' : editingId ? 'Update product' : 'Add product'}</button>{editingId && <button type="button" className="secondary-btn" onClick={() => { setEditingId(null); setForm(emptyForm) }}>Cancel</button>}</div></form>
+      <div className="product-results">{catalog.length ? catalog.map(item => <div className="inventory-row" key={item.id || item.sku}><span><strong>{item.name}</strong><small>{item.sku} · {item.barcode || 'No barcode'} · {money(item.price)}</small></span><span className={item.stock != null && item.stock < 10 ? 'stock-low' : 'stock-ok'}>{item.stock == null ? 'Untracked stock' : `${item.stock} in stock`}</span><span className="inventory-actions"><button className="secondary-btn" onClick={() => edit(item)}>Edit</button><button className="text-btn danger-text" onClick={() => onDelete(item.id || item.sku)}>Delete</button></span></div>) : <div className="empty-friendly compact"><p>No products found in this workspace.</p></div>}</div>
+    </section>
+  </>
+}
 function InvoiceTable({ invoices }) { const navigate = useNavigate(); return <div className="table-scroll"><table><thead><tr><th>Invoice</th><th>Customer</th><th>Date</th><th>Amount</th><th>Status</th><th></th></tr></thead><tbody>{invoices.map(item => <tr key={item.id}><td><strong className="invoice-id">{item.id}</strong></td><td>{item.customer}</td><td className="muted">{item.date}</td><td><strong>{money(item.total || item.items?.reduce((sum, x) => sum + x.price * x.quantity * (1 + x.tax / 100), 0) || 0)}</strong></td><td><span className={`status ${item.status.toLowerCase()}`}><i/>{item.status}</span></td><td><button className="more-btn" onClick={() => navigate(`/invoice/${item.id}`)}><Icon name="arrow" size={16}/></button></td></tr>)}</tbody></table></div> }
 function Invoices({ invoices }) { const [query, setQuery] = useState(''); const filtered = invoices.filter(item => `${item.id} ${item.customer}`.toLowerCase().includes(query.toLowerCase())); return <><section className="page-intro"><p className="muted">Shareable digital invoices and customer payment status.</p></section><section className="panel invoice-page-panel"><div className="toolbar"><div className="search-box"><Icon name="search" size={17}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search invoices or customers…"/></div></div><InvoiceTable invoices={filtered}/></section></> }
 function InvoiceDetail({ invoices }) { const { id } = useParams(); const invoice = invoices.find(item => item.id === id); if (!invoice) return <section className="panel empty-friendly"><h3>Invoice not found</h3><p className="muted">This link may be expired or the invoice was removed.</p></section>; const subtotal = invoice.subtotal ?? invoice.items.reduce((sum, item) => sum + item.price * item.quantity, 0); const tax = invoice.tax ?? invoice.items.reduce((sum, item) => sum + item.price * item.quantity * item.tax / 100, 0); const total = invoice.total ?? subtotal + tax; return <section className="invoice-detail panel"><div className="receipt-head"><div><p className="eyebrow">DIGITAL INVOICE</p><h2>{invoice.id}</h2><p className="muted">{invoice.date} · BillFlow</p></div><span className={`status ${invoice.status.toLowerCase()}`}><i/>{invoice.status}</span></div><div className="receipt-customer"><span>Billed to</span><strong>{invoice.customer}</strong></div>{invoice.items.map(item => <div className="receipt-item" key={item.sku}><span>{item.name}<small>{item.quantity} × {money(item.price)}</small></span><strong>{money(item.price * item.quantity)}</strong></div>)}<div className="totals"><div><span>Subtotal</span><b>{money(subtotal)}</b></div><div><span>GST</span><b>{money(tax)}</b></div><div className="grand-total"><span>Total paid</span><strong>{money(total)}</strong></div></div><div className="receipt-actions"><div className="share-box"><input readOnly value={`${window.location.origin}/receipt/${invoice.id}`} onFocus={event => event.target.select()}/><button className="secondary-btn" onClick={() => { navigator.clipboard?.writeText(window.location.href); toast.success('Receipt link copied') }}>Copy link</button></div><a className="whatsapp-btn" target="_blank" rel="noreferrer" href={`https://wa.me/?text=${encodeURIComponent(`BillFlow receipt ${invoice.id}: ${money(total)} ${window.location.origin}/receipt/${invoice.id}`)}`}>Send on WhatsApp</a><div className="payment-qr"><QRCodeSVG value={`${window.location.origin}/receipt/${invoice.id}`} size={96}/><small>Scan to view receipt</small></div></div></section> }
@@ -196,6 +277,92 @@ function Settings() {
 }
 function SimplePage({ title, text, icon = 'users' }) { return <section className="panel empty-friendly"><div className="big-soft-icon peach"><Icon name={icon} size={30}/></div><h3>{title}</h3><p className="muted">{text}</p></section> }
 
-function App() { const [user, setUser] = useState(() => supabase ? null : getDemoUser()); const [darkMode, setDarkMode] = useState(() => localStorage.getItem('billflow-theme') === 'dark'); const [catalog, setCatalog] = useState(() => supabase ? [] : products); const [invoices, setInvoices] = useState(() => { if (supabase) return []; try { return JSON.parse(localStorage.getItem('billflow-invoices')) || seedInvoices } catch { return seedInvoices } }); useEffect(() => { localStorage.setItem('billflow-invoices', JSON.stringify(invoices)) }, [invoices]); useEffect(() => { localStorage.setItem('billflow-theme', darkMode ? 'dark' : 'light'); document.body.dataset.theme = darkMode ? 'dark' : 'light' }, [darkMode]); useEffect(() => { let mounted = true; if (supabase) { supabase.auth.getSession().then(async ({ data }) => { if (!mounted || !data.session?.user) return; const profile = await getProfile(data.session.user.id); if (mounted) setUser({ id: data.session.user.id, email: data.session.user.email, name: profile?.full_name || data.session.user.user_metadata?.full_name || data.session.user.email?.split('@')[0], role: profile?.role || data.session.user.user_metadata?.role || 'Employee', workspace_id: profile?.workspace_id }) }); const { data: listener } = supabase.auth.onAuthStateChange(async (_event, session) => { if (!session?.user) return setUser(null); const profile = await getProfile(session.user.id); if (mounted) setUser({ id: session.user.id, email: session.user.email, name: profile?.full_name || session.user.user_metadata?.full_name || session.user.email?.split('@')[0], role: profile?.role || session.user.user_metadata?.role || 'Employee', workspace_id: profile?.workspace_id }) }); return () => { mounted = false; listener.subscription.unsubscribe() } } return () => { mounted = false } }, []); useEffect(() => { if (!supabase || !user?.id) return; loadProducts(user.workspace_id).then(setCatalog); loadInvoices(user.workspace_id).then(setInvoices) }, [user?.id, user?.workspace_id]); const createInvoice = data => { const invoice = { ...data, id: `INV-${1050 + invoices.length}`, date: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }), status: 'Pending', payment: 'Pending' }; setInvoices(prev => [invoice, ...prev]); toast.success('Invoice created — shareable link ready'); }; return <BrowserRouter>{user ? <Layout user={user} darkMode={darkMode} onToggleTheme={() => setDarkMode(value => !value)} onLogout={async () => { await supabase?.auth.signOut(); localStorage.removeItem('billflow-user'); setUser(null) }}><Routes><Route path="/" element={<Protected user={user} roles={['Owner']}><Overview invoices={invoices}/></Protected>}/><Route path="/pos" element={<Protected user={user} roles={['Owner', 'Employee']}><POS onInvoice={createInvoice} catalog={catalog}/></Protected>}/><Route path="/invoices" element={<Invoices invoices={invoices}/>}/><Route path="/invoice/:id" element={<InvoiceDetail invoices={invoices}/>}/><Route path="/receipt/:id" element={<InvoiceDetail invoices={invoices}/>}/><Route path="/inventory" element={<Protected user={user} roles={['Owner', 'Employee']}><Inventory catalog={catalog}/></Protected>}/><Route path="/customers" element={<Protected user={user} roles={['Owner']}><SimplePage title="Customer management" text="Owner-only customer records and billing history."/></Protected>}/><Route path="/reports" element={<Protected user={user} roles={['Owner']}><Reports invoices={invoices}/></Protected>}/><Route path="/settings" element={<Protected user={user} roles={['Owner']}><Settings/></Protected>}/><Route path="*" element={<Navigate to="/invoices" replace/>}/></Routes></Layout> : <Routes><Route path="/invoice/:id" element={<InvoiceDetail invoices={invoices}/>}/><Route path="/receipt/:id" element={<InvoiceDetail invoices={invoices}/>}/><Route path="*" element={<Auth onAuth={nextUser => { localStorage.setItem('billflow-user', JSON.stringify(nextUser)); setUser(nextUser) }}/>}/></Routes>}<Toaster position="bottom-right"/></BrowserRouter> }
+function App() { const [user, setUser] = useState(() => supabase ? null : getDemoUser()); const [darkMode, setDarkMode] = useState(() => localStorage.getItem('billflow-theme') === 'dark'); const [catalog, setCatalog] = useState(() => supabase ? [] : products); const [invoices, setInvoices] = useState(() => { if (supabase) return []; try { return JSON.parse(localStorage.getItem('billflow-invoices')) || seedInvoices } catch { return seedInvoices } }); useEffect(() => { localStorage.setItem('billflow-invoices', JSON.stringify(invoices)) }, [invoices]); useEffect(() => { localStorage.setItem('billflow-theme', darkMode ? 'dark' : 'light'); document.body.dataset.theme = darkMode ? 'dark' : 'light' }, [darkMode]); useEffect(() => { let mounted = true; if (supabase) { supabase.auth.getSession().then(async ({ data }) => { if (!mounted || !data.session?.user) return; const profile = await getProfile(data.session.user.id); if (mounted) setUser({ id: data.session.user.id, email: data.session.user.email, name: profile?.full_name || data.session.user.user_metadata?.full_name || data.session.user.email?.split('@')[0], role: profile?.role || data.session.user.user_metadata?.role || 'Employee', workspace_id: profile?.workspace_id }) }); const { data: listener } = supabase.auth.onAuthStateChange(async (_event, session) => { if (!session?.user) return setUser(null); const profile = await getProfile(session.user.id); if (mounted) setUser({ id: session.user.id, email: session.user.email, name: profile?.full_name || session.user.user_metadata?.full_name || session.user.email?.split('@')[0], role: profile?.role || session.user.user_metadata?.role || 'Employee', workspace_id: profile?.workspace_id }) }); return () => { mounted = false; listener.subscription.unsubscribe() } } return () => { mounted = false } }, []); useEffect(() => { if (!supabase || !user?.id) return; loadProducts(user.workspace_id).then(setCatalog); loadInvoices(user.workspace_id).then(setInvoices) }, [user?.id, user?.workspace_id]); const updateCatalogStocks = updates => setCatalog(current => current.map(item => {
+    const update = updates.find(candidate => (candidate.id && candidate.id === item.id) || candidate.sku === item.sku)
+    return update ? { ...item, stock: update.stock } : item
+  }))
+  const createProduct = async product => {
+    if (!supabase) {
+      const localProduct = { ...product, id: product.sku }
+      setCatalog(current => [localProduct, ...current])
+      toast.success('Product added to preview inventory')
+      return true
+    }
+    const payload = { ...product, ...(user?.workspace_id ? { workspace_id: user.workspace_id } : {}) }
+    const { data: created, error } = await supabase.from('products').insert(payload).select('*').single()
+    if (error) {
+      toast.error(`Failed to add product: ${error.message}`)
+      return false
+    }
+    const normalized = { ...created, price: Number(created.price), tax: Number(created.tax ?? created.tax_rate ?? 0), stock: created.stock == null ? null : Number(created.stock) }
+    setCatalog(current => [normalized, ...current])
+    toast.success('Product added to inventory')
+    return true
+  }
+  const updateProduct = async (id, product) => {
+    if (!supabase) {
+      setCatalog(current => current.map(item => (item.id || item.sku) === id ? { ...item, ...product, id: item.id || id } : item))
+      toast.success('Product updated in preview inventory')
+      return true
+    }
+    const target = catalog.find(item => (item.id || item.sku) === id)
+    let query = supabase.from('products').update(product).eq(target?.id ? 'id' : 'sku', id)
+    if (user?.workspace_id) query = query.eq('workspace_id', user.workspace_id)
+    const { data: updated, error } = await query.select('*').single()
+    if (error) {
+      toast.error(`Failed to update product: ${error.message}`)
+      return false
+    }
+    const normalized = { ...updated, price: Number(updated.price), tax: Number(updated.tax ?? updated.tax_rate ?? 0), stock: updated.stock == null ? null : Number(updated.stock) }
+    setCatalog(current => current.map(item => (item.id || item.sku) === id ? normalized : item))
+    toast.success('Product updated')
+    return true
+  }
+  const deleteProduct = async id => {
+    if (!window.confirm('Delete this product from inventory?')) return false
+    if (!supabase) {
+      setCatalog(current => current.filter(item => (item.id || item.sku) !== id))
+      toast.success('Product deleted from preview inventory')
+      return true
+    }
+    const target = catalog.find(item => (item.id || item.sku) === id)
+    let query = supabase.from('products').delete().eq(target?.id ? 'id' : 'sku', id)
+    if (user?.workspace_id) query = query.eq('workspace_id', user.workspace_id)
+    const { error } = await query
+    if (error) {
+      toast.error(`Failed to delete product: ${error.message}`)
+      return false
+    }
+    setCatalog(current => current.filter(item => (item.id || item.sku) !== id))
+    toast.success('Product deleted')
+    return true
+  }
+  const createInvoice = async data => {
+    const stockResult = await decrementStock(data.items || [], user?.workspace_id)
+    if (!stockResult.ok) return false
+    const invoiceNumber = `INV-${1050 + invoices.length}`
+    if (supabase) {
+      const payload = { invoice_number: invoiceNumber, customer_name: data.customer, subtotal: data.subtotal, tax: data.tax, total: data.total, status: data.status, payment_method: data.payment, ...(user?.workspace_id ? { workspace_id: user.workspace_id } : {}) }
+      const { data: created, error } = await supabase.from('invoices').insert(payload).select('*').single()
+      if (error) {
+        toast.error(`Failed to create invoice: ${error.message}`)
+        return false
+      }
+      if (data.items?.length && created?.id) {
+        const lines = data.items.map(item => ({ invoice_id: created.id, product_id: item.id || null, product_name: item.name, quantity: item.quantity, unit_price: item.price, tax_rate: item.tax, line_total: item.price * item.quantity * (1 + item.tax / 100) }))
+        const { error: lineError } = await supabase.from('invoice_items').insert(lines)
+        if (lineError) {
+          toast.error(`Invoice created, but line items failed: ${lineError.message}`)
+          return false
+        }
+      }
+    }
+    const invoice = { ...data, id: invoiceNumber, date: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) }
+    setInvoices(prev => [invoice, ...prev])
+    updateCatalogStocks(stockResult.updates)
+    toast.success('Invoice created — inventory updated')
+    return true
+  }
+  return <BrowserRouter>{user ? <Layout user={user} darkMode={darkMode} onToggleTheme={() => setDarkMode(value => !value)} onLogout={async () => { await supabase?.auth.signOut(); localStorage.removeItem('billflow-user'); setUser(null) }}><Routes><Route path="/" element={<Protected user={user} roles={['Owner']}><Overview invoices={invoices}/></Protected>}/><Route path="/pos" element={<Protected user={user} roles={['Owner', 'Employee']}><POS onInvoice={createInvoice} catalog={catalog}/></Protected>}/><Route path="/invoices" element={<Invoices invoices={invoices}/>}/><Route path="/invoice/:id" element={<InvoiceDetail invoices={invoices}/>}/><Route path="/receipt/:id" element={<InvoiceDetail invoices={invoices}/>}/><Route path="/inventory" element={<Protected user={user} roles={['Owner', 'Employee']}><Inventory catalog={catalog} onCreate={createProduct} onUpdate={updateProduct} onDelete={deleteProduct}/></Protected>}/><Route path="/customers" element={<Protected user={user} roles={['Owner']}><SimplePage title="Customer management" text="Owner-only customer records and billing history."/></Protected>}/><Route path="/reports" element={<Protected user={user} roles={['Owner']}><Reports invoices={invoices}/></Protected>}/><Route path="/settings" element={<Protected user={user} roles={['Owner']}><Settings/></Protected>}/><Route path="*" element={<Navigate to="/invoices" replace/>}/></Routes></Layout> : <Routes><Route path="/invoice/:id" element={<InvoiceDetail invoices={invoices}/>}/><Route path="/receipt/:id" element={<InvoiceDetail invoices={invoices}/>}/><Route path="*" element={<Auth onAuth={nextUser => { localStorage.setItem('billflow-user', JSON.stringify(nextUser)); setUser(nextUser) }}/>}/></Routes>}<Toaster position="bottom-right"/></BrowserRouter> }
 
 createRoot(document.getElementById('root')).render(<App />)
