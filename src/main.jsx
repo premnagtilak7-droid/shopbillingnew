@@ -5,6 +5,8 @@ import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation, useNaviga
 import { createClient } from '@supabase/supabase-js'
 import { QRCodeSVG } from 'qrcode.react'
 import { Html5Qrcode } from 'html5-qrcode'
+import JsBarcode from 'jsbarcode'
+import { useBarcodeScanner, playBarcodeBeep } from './hooks/useBarcodeScanner'
 import { CartesianGrid, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis, Cell } from 'recharts'
 import toast, { Toaster } from 'react-hot-toast'
 import './styles.css'
@@ -38,7 +40,7 @@ async function loadProducts(workspaceId) {
   if (workspaceId) query = query.eq('workspace_id', workspaceId)
   const { data, error } = await query
   if (error) { toast.error(`Failed to load inventory: ${error.message}`); return [] }
-  return (data || []).map(item => ({ ...item, price: Number(item.price), tax: Number(item.tax ?? item.tax_rate ?? 0), stock: Number(item.stock ?? item.inventory_count ?? 0) }))
+  return (data || []).map(item => ({ ...item, price: Number(item.price), cost_price: Number(item.cost_price ?? item.costPrice ?? 0), tax: Number(item.tax ?? item.tax_rate ?? 0), stock: item.stock == null && item.inventory_count == null ? null : Number(item.stock ?? item.inventory_count), min_stock_alert: Number(item.min_stock_alert ?? item.minStockAlert ?? 10) }))
 }
 
 async function decrementStock(items, workspaceId) {
@@ -113,6 +115,30 @@ const getDemoUser = () => {
   try { return JSON.parse(localStorage.getItem('billflow-user')) || null } catch { return null }
 }
 
+function printBarcodeLabel(product) {
+  if (!product?.barcode) return toast.error('Add a barcode before printing a label')
+  const popup = window.open('', '_blank', 'width=420,height=320')
+  if (!popup) return toast.error('Allow pop-ups to print barcode labels')
+  popup.document.write('<!doctype html><html><head><title>Barcode label</title><style>body{font-family:Arial;text-align:center;padding:20px}h3{margin:0 0 10px;font-size:14px}svg{max-width:100%}@media print{body{padding:4px}}</style></head><body><h3></h3><svg id="barcode"></svg></body></html>')
+  popup.document.close()
+  popup.document.querySelector('h3').textContent = product.name
+  JsBarcode(popup.document.querySelector('#barcode'), product.barcode, { format: 'auto', displayValue: true, margin: 8, height: 55 })
+  popup.focus()
+  popup.print()
+  popup.close()
+}
+
+function printThermalReceipt({ items, subtotal, tax, total }) {
+  const popup = window.open('', '_blank', 'width=360,height=640')
+  if (!popup) return toast.error('Allow pop-ups to print the receipt')
+  const lines = items.map(item => `<div class="line"><span>${item.name}<small>${item.quantity} x ${money(item.price)}</small></span><b>${money(item.price * item.quantity)}</b></div>`).join('')
+  popup.document.write(`<!doctype html><html><head><title>BillFlow receipt</title><style>@page{size:80mm auto;margin:0}body{width:72mm;margin:0 auto;padding:5mm 3mm;font:12px monospace;color:#111}.head{text-align:center;border-bottom:1px dashed #111;padding-bottom:8px;margin-bottom:8px}.head h2{font-size:18px;margin:0 0 4px}.line{display:flex;justify-content:space-between;gap:8px;margin:7px 0}.line span{max-width:48%}.line small{display:block;margin-top:2px}.totals{border-top:1px dashed #111;margin-top:10px;padding-top:8px}.total{display:flex;justify-content:space-between;font-size:16px;font-weight:bold;margin-top:6px}@media print{button{display:none}}</style></head><body><div class="head"><h2>BillFlow</h2><div>Thermal Receipt</div><div>${new Date().toLocaleString('en-IN')}</div></div>${lines}<div class="totals"><div>Subtotal: ${money(subtotal)}</div><div>GST: ${money(tax)}</div><div class="total"><span>Total</span><span>${money(total)}</span></div></div><p style="text-align:center;margin-top:18px">Thank you for shopping!</p></body></html>`)
+  popup.document.close()
+  popup.focus()
+  popup.print()
+  popup.close()
+}
+
 function Icon({ name, size = 19 }) {
   const paths = {
     grid: <><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></>,
@@ -135,7 +161,42 @@ function Layout({ user, onLogout, onToggleTheme, darkMode, children }) { const [
 
 function Protected({ user, roles, children }) { return roles.includes(user.role) ? children : <Navigate to="/invoices" replace /> }
 function ProductSearch({ onAdd, products: catalog }) { const [query, setQuery] = useState(''); const matches = catalog.filter(item => `${item.name} ${item.sku} ${item.barcode}`.toLowerCase().includes(query.toLowerCase())); return <section className="panel product-search"><div className="search-box"><Icon name="search" size={17}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search product, SKU or barcode…" /></div><div className="product-results">{matches.map(item => <button key={item.sku} onClick={() => onAdd(item)}><span><strong>{item.name}</strong><small>{item.sku} · {item.barcode}</small></span><b>{money(item.price)}</b></button>)}</div></section> }
-function Scanner({ onCode }) { const scannerRef = useRef(null); const [active, setActive] = useState(false); const [message, setMessage] = useState('Camera is off'); const scannerId = 'billflow-camera-reader'; const start = async () => { if (!window.isSecureContext && location.hostname !== 'localhost') return setMessage('Camera access requires HTTPS. Use the manual barcode field below.'); try { const scanner = new Html5Qrcode(scannerId); scannerRef.current = scanner; setMessage('Requesting camera permission…'); await scanner.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: 280, height: 140 }, aspectRatio: 1.777 }, decoded => onCode(decoded), () => {}); setActive(true); setMessage('Scanning continuously — point at a barcode'); } catch (err) { setActive(false); setMessage(err?.message?.includes('Permission') ? 'Camera permission was denied. Enable it in browser settings.' : 'Camera could not start. Check HTTPS and camera availability, then use manual entry.'); scannerRef.current = null } }; const stop = async () => { if (scannerRef.current) { try { await scannerRef.current.stop(); await scannerRef.current.clear() } catch { /* already stopped */ } } scannerRef.current = null; setActive(false); setMessage('Camera is off') }; useEffect(() => () => { stop() }, []); return <section className="scanner panel"><div className="panel-heading"><div><h3>Barcode scanner</h3><p className="muted">Live camera scan with visual viewfinder</p></div><button className="secondary-btn" onClick={active ? stop : start}><Icon name="camera" size={16}/>{active ? 'Stop' : 'Start camera'}</button></div><div className={`camera-box ${active ? 'is-scanning' : ''}`}><div id={scannerId} className="camera-reader"/><div className="scanner-frame" aria-hidden="true"><i/><i/><i/><i/></div>{!active && <div className="camera-placeholder"><Icon name="camera" size={30}/><span>{message}</span></div>}</div><small className="muted">{message}</small></section> }
+function CameraScannerModal({ onCode, onClose }) {
+  const scannerRef = useRef(null)
+  const [message, setMessage] = useState('Requesting camera permission…')
+  const scannerId = 'billflow-camera-modal-reader'
+
+  useEffect(() => {
+    let mounted = true
+    const start = async () => {
+      if (!window.isSecureContext && location.hostname !== 'localhost') {
+        setMessage('Camera access requires HTTPS. Use a hardware scanner or manual entry.')
+        return
+      }
+      try {
+        const scanner = new Html5Qrcode(scannerId)
+        scannerRef.current = scanner
+        await scanner.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: 280, height: 140 }, aspectRatio: 1.777 }, decoded => onCode(decoded), () => {})
+        if (mounted) setMessage('Scanning continuously — point at a barcode')
+      } catch (error) {
+        if (mounted) setMessage(error?.message?.toLowerCase().includes('permission') ? 'Camera permission was denied. Enable it in browser settings.' : 'Camera could not start. Check camera access and HTTPS, then use manual entry.')
+        scannerRef.current = null
+      }
+    }
+    start()
+    return () => {
+      mounted = false
+      if (scannerRef.current) scannerRef.current.stop().catch(() => {}).finally(() => scannerRef.current?.clear().catch(() => {}))
+    }
+  }, [onCode])
+
+  return <div className="modal-backdrop"><section className="modal camera-modal"><div className="modal-head"><div><p className="eyebrow">CAMERA SCANNER</p><h3>Scan barcode</h3></div><button className="close-btn" onClick={onClose}><Icon name="close"/></button></div><div className="camera-box is-scanning"><div id={scannerId} className="camera-reader"/><div className="scanner-frame" aria-hidden="true"><i/><i/><i/><i/></div></div><small className="muted">{message}</small></section></div>
+}
+
+function Scanner({ onCode }) {
+  const [open, setOpen] = useState(false)
+  return <section className="scanner panel"><div className="panel-heading"><div><h3>Barcode scanner</h3><p className="muted">Use your device camera as a fallback</p></div><button className="secondary-btn" onClick={() => setOpen(true)}><Icon name="camera" size={16}/> Open camera</button></div>{open && <CameraScannerModal onCode={onCode} onClose={() => setOpen(false)}/>}<div className="camera-placeholder compact-placeholder"><Icon name="camera" size={26}/><span>USB/Bluetooth scanner and manual entry are also supported.</span></div></section>
+}
 
 function Cart({ cart, setCart, onCheckout }) { const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0); const tax = cart.reduce((sum, item) => sum + item.price * item.quantity * item.tax / 100, 0); const total = subtotal + tax; const change = (sku, amount) => setCart(items => items.map(item => item.sku === sku ? { ...item, quantity: Math.max(0, item.quantity + amount) } : item).filter(item => item.quantity)); return <section className="panel cart-panel"><div className="panel-heading"><div><h3>Current cart</h3><p className="muted">{cart.reduce((sum, item) => sum + item.quantity, 0)} items</p></div><button className="text-btn" onClick={() => setCart([])}>Clear</button></div>{cart.length === 0 ? <div className="empty-friendly compact"><Icon name="invoice" size={28}/><p>Scan or search products to begin.</p></div> : <div className="cart-lines">{cart.map(item => <div className="cart-line" key={item.sku}><div><strong>{item.name}</strong><small>{item.sku} · {money(item.price)} + {item.tax}% GST</small></div><div className="quantity"><button onClick={() => change(item.sku, -1)}>−</button><b>{item.quantity}</b><button onClick={() => change(item.sku, 1)}>+</button></div><strong>{money(item.price * item.quantity)}</strong></div>)}</div>}<div className="totals"><div><span>Subtotal</span><b>{money(subtotal)}</b></div><div><span>GST</span><b>{money(tax)}</b></div><div className="grand-total"><span>Total</span><strong>{money(total)}</strong></div></div><button className="primary-btn full" disabled={!cart.length} onClick={() => onCheckout({ subtotal, tax, total })}>Create invoice</button></section> }
 
@@ -144,10 +205,7 @@ function POS({ onInvoice, catalog }) {
   const [manual, setManual] = useState('')
   const [paymentOpen, setPaymentOpen] = useState(false)
   const [checkoutSummary, setCheckoutSummary] = useState(null)
-  const barcodeBuffer = useRef('')
-  const lastBarcodeKeyAt = useRef(0)
-  const scanTimer = useRef(null)
-
+  const [receiptData, setReceiptData] = useState(null)
   const add = product => {
     setCart(items => items.some(item => item.sku === product.sku)
       ? items.map(item => item.sku === product.sku ? { ...item, quantity: item.quantity + 1 } : item)
@@ -161,73 +219,70 @@ function POS({ onInvoice, catalog }) {
     const normalized = String(value || '').trim()
     if (!normalized) return
     const product = await findProduct(normalized)
-    if (product) add(product)
-    else toast.error(`No product matches “${normalized}”`)
+    if (product) {
+      playBarcodeBeep()
+      add(product)
+    } else {
+      toast.error('Product not found')
+    }
   }
 
-  useEffect(() => {
-    const handleBarcodeKeyDown = event => {
-      const now = Date.now()
-      const printable = event.key.length === 1
-      const elapsed = lastBarcodeKeyAt.current ? now - lastBarcodeKeyAt.current : 0
-      const rapid = elapsed > 0 && elapsed <= 120
-
-      if (event.key === 'Enter') {
-        const scan = barcodeBuffer.current.trim()
-        if (scan.length >= 4 && rapid) {
-          event.preventDefault()
-          event.stopPropagation()
-          code(scan)
-        }
-        barcodeBuffer.current = ''
-        lastBarcodeKeyAt.current = 0
-        return
-      }
-
-      if (!printable) return
-      if (!lastBarcodeKeyAt.current || elapsed > 120) {
-        barcodeBuffer.current = event.key
-      } else {
-        barcodeBuffer.current += event.key
-      }
-      lastBarcodeKeyAt.current = now
-
-      clearTimeout(scanTimer.current)
-      scanTimer.current = setTimeout(() => {
-        barcodeBuffer.current = ''
-        lastBarcodeKeyAt.current = 0
-      }, 180)
-    }
-
-    window.addEventListener('keydown', handleBarcodeKeyDown, true)
-    return () => {
-      window.removeEventListener('keydown', handleBarcodeKeyDown, true)
-      clearTimeout(scanTimer.current)
-    }
-  })
+  useBarcodeScanner(code, true)
 
   const checkout = summary => { setCheckoutSummary(summary); setPaymentOpen(true) }
   const complete = async payment => {
     const saved = await onInvoice({ customer: 'Walk-in customer', items: cart, ...checkoutSummary, payment, status: 'Paid' })
     if (!saved) return
+    setReceiptData({ items: cart, ...checkoutSummary })
     setCart([])
     setPaymentOpen(false)
     toast.success('Payment recorded and receipt created')
   }
 
+  const lowStockItems = cart.filter(item => item.stock != null && item.stock <= Number(item.min_stock_alert ?? 10))
+  const printReceipt = () => {
+    const printable = receiptData || (checkoutSummary && cart.length ? { items: cart, ...checkoutSummary } : null)
+    if (!printable) return toast.error('Complete a bill before printing a receipt')
+    printThermalReceipt(printable)
+  }
+
   return <>
-    <section className="page-intro"><div><p className="muted">Quick Billing Counter <span className="live-dot">● Live</span></p><small className="muted">USB/Bluetooth gun ready · scan a barcode ending with Enter</small></div><div className="low-stock-summary">{catalog.filter(item => item.stock != null && item.stock < 10).length} low-stock alerts</div></section>
-    <div className="pos-grid"><div><Scanner onCode={code}/><div className="panel manual-entry"><label>Manual barcode / SKU entry<div className="inline-form"><input value={manual} onChange={event => setManual(event.target.value)} onKeyDown={event => event.key === 'Enter' && code(manual)} placeholder="8901234567890 or RICE-5KG" autoFocus/><button className="primary-btn" onClick={() => code(manual)}>Add item</button></div></label></div><ProductSearch onAdd={add} products={catalog}/></div><Cart cart={cart} setCart={setCart} onCheckout={checkout}/></div>
-    {paymentOpen && <PaymentModal total={checkoutSummary?.total || 0} onClose={() => setPaymentOpen(false)} onComplete={complete}/>}
+    <section className="page-intro"><div><p className="muted">Quick Billing Counter <span className="live-dot">● Live</span></p><small className="muted">USB/Bluetooth gun ready · scan a barcode ending with Enter</small></div><div className="low-stock-summary">{catalog.filter(item => item.stock != null && item.stock <= Number(item.min_stock_alert ?? 10)).length} low-stock alerts</div></section>
+    <div className="pos-grid"><div><Scanner onCode={code}/><div className="panel manual-entry"><label>Manual barcode / SKU entry<div className="inline-form"><input value={manual} onChange={event => setManual(event.target.value)} onKeyDown={event => event.key === 'Enter' && code(manual)} placeholder="8901234567890 or RICE-5KG" autoFocus/><button className="primary-btn" onClick={() => code(manual)}>Add item</button></div></label></div><ProductSearch onAdd={add} products={catalog}/></div><div><Cart cart={cart} setCart={setCart} onCheckout={checkout}/>{lowStockItems.length > 0 && <div className="low-stock-warning"><strong>Low-stock warning</strong><span>{lowStockItems.map(item => `${item.name} (${item.stock} left)`).join(' · ')}</span></div>}{receiptData && <button className="secondary-btn print-receipt-btn" onClick={printReceipt}>Print Receipt</button>}</div></div>
+    {paymentOpen && <PaymentModal total={checkoutSummary?.total || 0} onClose={() => setPaymentOpen(false)} onComplete={complete}/>} 
   </>
 }
 
 function PaymentModal({ total, onClose, onComplete }) { const [method, setMethod] = useState('UPI'); const upiLink = `upi://pay?pa=billflow@upi&pn=BillFlow&am=${total}&cu=INR`; return <div className="modal-backdrop"><section className="modal payment-modal"><div className="modal-head"><div><p className="eyebrow">SECURE CHECKOUT</p><h3>Collect {money(total)}</h3></div><button className="close-btn" onClick={onClose}><Icon name="close"/></button></div><div className="payment-methods">{['UPI', 'Cash', 'Card'].map(item => <button key={item} className={method === item ? 'selected' : ''} onClick={() => setMethod(item)}>{item}</button>)}</div>{method === 'UPI' && <div className="upi-panel"><div className="qr-placeholder">QR</div><p>Scan with any UPI app</p><a href={upiLink}>Open UPI payment</a></div>}<button className="primary-btn full" onClick={() => onComplete(method)}><Icon name="check" size={16}/> Mark {method} paid</button></section></div> }
 function Inventory({ catalog, onCreate, onUpdate, onDelete }) {
-  const emptyForm = { name: '', sku: '', barcode: '', price: '', tax: '18', stock: '' }
+  const emptyForm = { name: '', sku: '', barcode: '', price: '', cost_price: '', stock: '', min_stock_alert: '10', tax: '18' }
   const [form, setForm] = useState(emptyForm)
   const [editingId, setEditingId] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [barcodeStatus, setBarcodeStatus] = useState('')
+  const updateField = (field, value) => setForm(current => ({ ...current, [field]: value }))
+  const checkBarcode = value => {
+    const normalized = String(value || '').trim()
+    if (!normalized) return setBarcodeStatus('')
+    const existing = catalog.find(item => String(item.barcode || '').trim() === normalized && (item.id || item.sku) !== editingId)
+    setBarcodeStatus(existing ? `Barcode already belongs to ${existing.name}` : 'Barcode is available')
+  }
+  const scanInventoryBarcode = value => {
+    const normalized = String(value || '').trim()
+    if (!normalized) return
+    updateField('barcode', normalized)
+    checkBarcode(normalized)
+    playBarcodeBeep()
+    toast.success('Barcode captured')
+  }
+  useBarcodeScanner(scanInventoryBarcode, true)
+  const generateBarcode = () => {
+    let barcode
+    do barcode = `890${String(Math.floor(Math.random() * 10000000000)).padStart(10, '0')}`.slice(0, 13)
+    while (catalog.some(item => item.barcode === barcode))
+    updateField('barcode', barcode)
+    checkBarcode(barcode)
+  }
 
   const submit = async event => {
     event.preventDefault()
@@ -236,25 +291,33 @@ function Inventory({ catalog, onCreate, onUpdate, onDelete }) {
       return
     }
     setBusy(true)
-    const product = { ...form, name: form.name.trim(), sku: form.sku.trim(), barcode: form.barcode.trim(), price: Number(form.price), tax: Number(form.tax || 0), stock: form.stock === '' ? null : Number(form.stock) }
+    const product = { ...form, name: form.name.trim(), sku: form.sku.trim(), barcode: form.barcode.trim(), price: Number(form.price), cost_price: Number(form.cost_price || 0), tax: Number(form.tax || 0), stock: form.stock === '' ? null : Number(form.stock), min_stock_alert: Number(form.min_stock_alert || 0) }
+    if (barcodeStatus.startsWith('Barcode already')) {
+      setBusy(false)
+      toast.error(barcodeStatus)
+      return
+    }
     const saved = editingId ? await onUpdate(editingId, product) : await onCreate(product)
     setBusy(false)
     if (saved) {
       setForm(emptyForm)
       setEditingId(null)
+      setBarcodeStatus('')
     }
   }
 
   const edit = item => {
     setEditingId(item.id || item.sku)
-    setForm({ name: item.name || '', sku: item.sku || '', barcode: item.barcode || '', price: String(item.price ?? ''), tax: String(item.tax ?? 0), stock: item.stock == null ? '' : String(item.stock) })
+    setBarcodeStatus('')
+    setForm({ name: item.name || '', sku: item.sku || '', barcode: item.barcode || '', price: String(item.price ?? ''), cost_price: String(item.cost_price ?? item.costPrice ?? 0), tax: String(item.tax ?? 0), stock: item.stock == null ? '' : String(item.stock), min_stock_alert: String(item.min_stock_alert ?? 10) })
   }
+  const cancelEdit = () => { setEditingId(null); setForm(emptyForm); setBarcodeStatus('') }
 
   return <>
     <section className="page-intro"><div><p className="muted">Inventory & Barcode Manager</p><small className="muted">Live product catalog from Supabase</small></div></section>
     <section className="panel invoice-page-panel inventory-manager">
-      <form className="inventory-form" onSubmit={submit}><h3>{editingId ? 'Edit product' : 'Add product'}</h3><div className="form-grid"><label>Product name<input value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} placeholder="Premium Rice 5kg" required /></label><label>SKU<input value={form.sku} onChange={event => setForm({ ...form, sku: event.target.value })} placeholder="RICE-5KG" required /></label><label>Barcode<input value={form.barcode} onChange={event => setForm({ ...form, barcode: event.target.value })} placeholder="8901234567890" /></label><label>Price<input type="number" min="0" step="0.01" value={form.price} onChange={event => setForm({ ...form, price: event.target.value })} required /></label><label>GST %<input type="number" min="0" step="0.01" value={form.tax} onChange={event => setForm({ ...form, tax: event.target.value })} /></label><label>Stock<input type="number" min="0" step="1" value={form.stock} onChange={event => setForm({ ...form, stock: event.target.value })} placeholder="Leave blank if untracked" /></label></div><div className="form-actions"><button className="primary-btn" disabled={busy}>{busy ? 'Saving…' : editingId ? 'Update product' : 'Add product'}</button>{editingId && <button type="button" className="secondary-btn" onClick={() => { setEditingId(null); setForm(emptyForm) }}>Cancel</button>}</div></form>
-      <div className="product-results">{catalog.length ? catalog.map(item => <div className="inventory-row" key={item.id || item.sku}><span><strong>{item.name}</strong><small>{item.sku} · {item.barcode || 'No barcode'} · {money(item.price)}</small></span><span className={item.stock != null && item.stock < 10 ? 'stock-low' : 'stock-ok'}>{item.stock == null ? 'Untracked stock' : `${item.stock} in stock`}</span><span className="inventory-actions"><button className="secondary-btn" onClick={() => edit(item)}>Edit</button><button className="text-btn danger-text" onClick={() => onDelete(item.id || item.sku)}>Delete</button></span></div>) : <div className="empty-friendly compact"><p>No products found in this workspace.</p></div>}</div>
+      <form className="inventory-form" onSubmit={submit}><h3>{editingId ? 'Edit product' : 'Add product'}</h3><div className="form-grid"><label>Product Name<input value={form.name} onChange={event => updateField('name', event.target.value)} placeholder="Premium Rice 5kg" required /></label><label>SKU<input value={form.sku} onChange={event => updateField('sku', event.target.value)} placeholder="RICE-5KG" required /></label><label>Barcode<div className="field-with-action"><input value={form.barcode} onChange={event => { updateField('barcode', event.target.value); checkBarcode(event.target.value) }} placeholder="Scan or enter barcode" /><button type="button" className="secondary-btn compact-btn" onClick={generateBarcode}>Generate Random Barcode</button></div>{barcodeStatus && <small className={barcodeStatus.startsWith('Barcode already') ? 'danger-text' : 'success-text'}>{barcodeStatus}</small>}</label><label>Price<input type="number" min="0" step="0.01" value={form.price} onChange={event => updateField('price', event.target.value)} required /></label><label>Cost Price<input type="number" min="0" step="0.01" value={form.cost_price} onChange={event => updateField('cost_price', event.target.value)} /></label><label>Stock Quantity<input type="number" min="0" step="1" value={form.stock} onChange={event => updateField('stock', event.target.value)} placeholder="Leave blank if untracked" /></label><label>Min Stock Alert<input type="number" min="0" step="1" value={form.min_stock_alert} onChange={event => updateField('min_stock_alert', event.target.value)} /></label><label>GST Rate (%)<input type="number" min="0" step="0.01" value={form.tax} onChange={event => updateField('tax', event.target.value)} /></label></div><div className="form-actions"><button className="primary-btn" disabled={busy}>{busy ? 'Saving…' : editingId ? 'Update product' : 'Add product'}</button>{editingId && <button type="button" className="secondary-btn" onClick={cancelEdit}>Cancel</button>}</div></form>
+      <div className="product-results">{catalog.length ? catalog.map(item => <div className="inventory-row" key={item.id || item.sku}><span><strong>{item.name}</strong><small>{item.sku} · {item.barcode || 'No barcode'} · {money(item.price)} · Cost {money(item.cost_price || 0)}</small></span><span className={item.stock != null && item.stock <= Number(item.min_stock_alert ?? 10) ? 'stock-low' : 'stock-ok'}>{item.stock == null ? 'Untracked stock' : item.stock <= Number(item.min_stock_alert ?? 10) ? `${item.stock} low stock` : `${item.stock} in stock`}</span><span className="inventory-actions"><button className="secondary-btn" onClick={() => printBarcodeLabel(item)} disabled={!item.barcode}>Print Barcode Label</button><button className="secondary-btn" onClick={() => edit(item)}>Edit</button><button className="text-btn danger-text" onClick={() => onDelete(item.id || item.sku)}>Delete</button></span></div>) : <div className="empty-friendly compact"><p>No products found in this workspace.</p></div>}</div>
     </section>
   </>
 }
@@ -294,7 +357,7 @@ function App() { const [user, setUser] = useState(() => supabase ? null : getDem
       toast.error(`Failed to add product: ${error.message}`)
       return false
     }
-    const normalized = { ...created, price: Number(created.price), tax: Number(created.tax ?? created.tax_rate ?? 0), stock: created.stock == null ? null : Number(created.stock) }
+    const normalized = { ...created, price: Number(created.price), cost_price: Number(created.cost_price ?? created.costPrice ?? 0), tax: Number(created.tax ?? created.tax_rate ?? 0), stock: created.stock == null ? null : Number(created.stock), min_stock_alert: Number(created.min_stock_alert ?? 10) }
     setCatalog(current => [normalized, ...current])
     toast.success('Product added to inventory')
     return true

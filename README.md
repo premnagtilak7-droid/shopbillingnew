@@ -1,26 +1,34 @@
 # BillFlow
 
-BillFlow is a modern React + Vite POS and GST billing workspace for small shops, with Supabase-backed authentication and product lookup when configured.
+BillFlow is a React + Vite POS and GST billing workspace for small shops, with Supabase-backed authentication, workspace-scoped inventory, barcode scanning, billing, and receipts.
 
 ## Completed features
-- Supabase Auth login/signup with `full_name` and `role` metadata, email-confirmation-safe handling, session restoration, auth state listener, and profile lookup from `public.profiles`.
-- Explicit demo fallback when Supabase environment variables are unavailable.
-- Supabase `public.products` lookup for barcode/SKU scanning and catalog loading, with seeded preview fallback.
-- Continuous browser camera scanning using `BarcodeDetector`, manual SKU/barcode entry, instant feedback, duplicate quantity increments, GST/subtotal/total calculations, and cart controls.
-- Owner, Employee, and Customer role-aware navigation and route guards.
-- Owner overview, sales reporting, inventory/barcode manager, customer/settings areas; Employee quick billing counter; Customer invoice access.
-- Low-stock alert counts and inventory badges.
-- Quick UPI/Cash/Card checkout modal with UPI deep link and QR payment display.
-- Public `/receipt/:id` and `/invoice/:id` receipt routes with itemized totals, payment status, QR viewing code, copy link, printable-friendly layout, and WhatsApp share link.
-- Persisted preview invoices in localStorage, dark/light theme toggle, responsive desktop/tablet/mobile UI, and Netlify SPA rewrites.
+- Supabase Auth login/signup, profile lookup, role-aware navigation, and demo mode when credentials are unavailable.
+- Workspace-scoped product and invoice loading with product CRUD and checkout stock deduction.
+- Universal USB/Bluetooth barcode-gun listener in `src/hooks/useBarcodeScanner.ts`: rapid keypresses under 30ms terminated by Enter are handled as scans.
+- POS barcode lookup by barcode/SKU, cart quantity increments, success beep using Web Audio API, and `Product not found` feedback.
+- Reusable `html5-qrcode` camera modal with HTTPS, permission, missing-camera, start, stop, and manual/hardware fallback messaging.
+- Inventory fields for Product Name, SKU, Barcode, Price, Cost Price, Stock Quantity, Min Stock Alert, and GST Rate (%).
+- Inventory scan autofill, duplicate barcode detection, random barcode generation, low-stock badges, and JsBarcode label printing.
+- POS manual search, low-stock warnings based on `min_stock_alert`, GST/subtotal/total calculations, and 80mm thermal receipt printing.
+- UPI/Cash/Card checkout, public digital receipt routes, copy/share actions, WhatsApp sharing, dark/light mode, responsive layout, and SPA deployment configuration.
 
 ## Entry routes
 - `/` — Owner dashboard and recent invoices.
-- `/pos` — Owner/Employee quick billing counter.
-- `/inventory` — Owner/Employee inventory and barcode manager.
+- `/pos` — Owner/Employee billing counter with manual, camera, and USB/Bluetooth barcode scanning.
+- `/inventory` — Owner/Employee product and barcode manager.
 - `/invoices` — Signed-in invoice list.
-- `/invoice/:id` and `/receipt/:id` — Public digital receipt routes.
+- `/invoice/:id` and `/receipt/:id` — Digital receipt routes.
 - `/customers`, `/reports`, `/settings` — Owner-only portals.
+
+## Barcode workflow
+1. Open `/pos` or `/inventory` and keep the page active.
+2. Scan with a USB/Bluetooth barcode gun. The gun must send rapid characters followed by Enter.
+3. POS looks up the barcode, adds/increments the cart item, and plays a short beep. Unknown codes show `Product not found`.
+4. Inventory fills the Barcode field and reports whether another product already uses the code.
+5. For camera devices, choose **Open camera**, grant permission, and point the camera at the barcode. Manual entry remains available when HTTPS or camera access is unavailable.
+6. Generate a barcode for a product without one, save it, then use **Print Barcode Label** to print a sticker.
+7. After checkout, use **Print Receipt** for an 80mm thermal-printer layout.
 
 ## Environment and Supabase schema
 Copy `.env.example` to `.env.local`:
@@ -28,19 +36,13 @@ Copy `.env.example` to `.env.local`:
 VITE_SUPABASE_URL=https://your-project.supabase.co
 VITE_SUPABASE_ANON_KEY=your-anon-key
 ```
-Recommended Supabase tables and policies:
-- `profiles(id uuid primary key references auth.users, full_name text, role text)`
-- `products(id, sku, barcode, name, price, tax/tax_rate, stock/inventory_count)`
-- `invoices` with `invoice_items` relation and fields for customer, totals, status, and payment method.
-Enable RLS and policies appropriate to the Owner/Employee/Customer roles before handling production billing data.
+Recommended tables and columns:
+- `profiles(id uuid primary key references auth.users, full_name text, role text, workspace_id uuid)`
+- `products(id, workspace_id, sku, barcode, name, price, cost_price, tax or tax_rate, stock, min_stock_alert)`
+- `invoices` with workspace, customer, totals, status, and payment method fields.
+- `invoice_items` related to invoices and products.
 
-## User guide
-1. Configure Supabase keys for production, or use demo mode for preview testing.
-2. Log in/sign up and select a role in demo mode.
-3. Open POS billing, start the camera, or enter a barcode/SKU manually.
-4. Review the cart, GST, and total. Choose Create invoice, then select UPI, Cash, or Card.
-5. Copy the public receipt URL or send it through WhatsApp. Customers can open receipt links without being redirected to login.
-6. Switch between light and dark mode from the top-bar control.
+Enable RLS and workspace policies appropriate to Owner/Employee/Customer roles before using production billing data. If using legacy `inventory_count` or `tax_rate` columns, update the product payload or migrate the schema consistently.
 
 ## Development
 ```bash
@@ -50,10 +52,9 @@ npm run lint
 npm run build
 npm run preview
 ```
-Vite is configured with `server.allowedHosts: true` for GenSpark sandbox hostnames.
 
 ## Deployment
-- **Stack:** React 19, Vite 8, React Router, Tailwind CSS tooling, Supabase JS.
-- **Target:** Netlify through the connected GitHub repository. `netlify.toml` builds `dist` and rewrites client routes to `index.html`.
-- **Status:** Lint and production build verified locally.
-- **Repository:** https://github.com/shopbilling07-ship-it/shopbilling
+- **Stack:** React 19, Vite 8, React Router, Supabase JS, `html5-qrcode`, `jsbarcode`, Recharts, and react-hot-toast.
+- **Target:** Netlify or Vercel through the connected GitHub repository. `netlify.toml` and `vercel.json` provide SPA fallbacks.
+- **Repository:** https://github.com/premnagtilak7-droid/shopbillingnew.git
+- **Status:** Barcode, camera, inventory, POS, and thermal receipt workflow implemented; run lint/build before deployment.
