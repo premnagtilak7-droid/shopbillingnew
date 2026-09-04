@@ -15,6 +15,16 @@ BillFlow is a React + Vite POS and GST billing workspace for small shops, with S
 - Inventory scan autofill, duplicate barcode detection, random barcode generation, low-stock badges, and JsBarcode label printing.
 - POS manual search, low-stock warnings based on `min_stock_alert`, GST/subtotal/total calculations, and 80mm thermal receipt printing.
 - UPI/Cash/Card checkout, public digital receipt routes, copy/share actions, WhatsApp sharing, dark/light mode, responsive layout, and SPA deployment configuration.
+- Step 3 staff management: owner-only Employee Management, active staff directory, Supabase profile permission updates, secure staff provisioning Edge Function, PIN reset/deactivation actions, and register lock overlay.
+- Granular employee permissions for checkout discounts, cart item removal, reports, and inventory editing. Unauthorized cart removal can request an Owner PIN override.
+
+## Staff management and permissions
+`public.profiles` now supports `owner` and `employee` roles plus `can_apply_discounts`, `can_delete_cart_items`, `can_view_reports`, `can_edit_inventory`, `is_active`, `last_active_at`, and a server-only `pin_hash`. Apply `supabase/step3_staff_management.sql` in Supabase before using the directory. Owners manage profiles in their workspace through RLS; employees are least-privilege by default.
+
+The Settings page is Owner-only. **Add New Staff Member** invokes `supabase/functions/create-staff`, which uses the Supabase service role only on the server to create Auth credentials and hash the access PIN. Never put `SUPABASE_SERVICE_ROLE_KEY` in `.env` or Vite client variables. Deploy the function with Supabase CLI and configure its managed secrets before enabling production staff creation.
+
+The header's **Lock Register / Switch User** action locks the current browser register without signing out. This preview implementation uses a temporary `1234` PIN for the local lock/Owner override flow; replace it with server-side PIN verification before production use.
+
 
 ## Owner analytics
 The Overview dashboard uses live workspace data. Profit is calculated as `(selling price - cost price) × quantity sold`, gross margin is `profit ÷ revenue × 100`, and AOV is invoice total divided by the number of non-cancelled invoices. The Top Best-Selling Items table ranks invoice line items by quantity and displays revenue and profit per item. No mock revenue, profit, margin, or order values are injected into these cards.
