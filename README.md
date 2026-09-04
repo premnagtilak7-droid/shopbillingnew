@@ -5,12 +5,13 @@ BillFlow is a React + Vite POS and GST billing workspace for small shops, with S
 ## Completed features
 - Supabase Auth login/signup, profile lookup, role-aware navigation, and demo mode when credentials are unavailable.
 - Workspace-scoped product and invoice loading with product CRUD and checkout stock deduction.
-- Product selling price and `cost_price` (buy price) support across product loading, inventory forms, POS products, and analytics.
-- Owner dashboard analytics computed from invoice and product records: total revenue, total net profit, gross margin percentage, average order value, and top five products by quantity sold.
+- Product selling price, `cost_price` (buy price), and `reorder_level` (default 5 units) support across product loading, inventory forms, POS products, and analytics.
+- Advanced inventory alerts: a Low Stock Alerts reorder view, Out of Stock/Low Stock/In Stock badges, and inline plus/minus stock adjustments persisted to Supabase.
+- Owner dashboard analytics computed from invoice and product records: total revenue, total net profit, gross margin percentage, average order value, top five products by quantity sold, and a Stock Attention Required card.
 - Universal USB/Bluetooth barcode-gun listener in `src/hooks/useBarcodeScanner.ts`: rapid keypresses under 30ms terminated by Enter are handled as scans.
 - POS barcode lookup by barcode/SKU, cart quantity increments, success beep using Web Audio API, and `Product not found` feedback.
 - Reusable `html5-qrcode` camera modal with HTTPS, permission, missing-camera, start, stop, and manual/hardware fallback messaging.
-- Inventory fields for Product Name, SKU, Barcode, Price, Cost Price, Stock Quantity, Min Stock Alert, and GST Rate (%).
+- Inventory fields for Product Name, SKU, Barcode, Price, Cost Price, Stock Quantity, Reorder Level (default 5), Min Stock Alert, and GST Rate (%).
 - Inventory scan autofill, duplicate barcode detection, random barcode generation, low-stock badges, and JsBarcode label printing.
 - POS manual search, low-stock warnings based on `min_stock_alert`, GST/subtotal/total calculations, and 80mm thermal receipt printing.
 - UPI/Cash/Card checkout, public digital receipt routes, copy/share actions, WhatsApp sharing, dark/light mode, responsive layout, and SPA deployment configuration.
@@ -21,7 +22,7 @@ The Overview dashboard uses live workspace data. Profit is calculated as `(selli
 ## Entry routes
 - `/` — Owner dashboard, live analytics, top products, and recent invoices.
 - `/pos` — Owner/Employee billing counter with manual, camera, and USB/Bluetooth barcode scanning.
-- `/inventory` — Owner/Employee product and barcode manager.
+- `/inventory` — Owner/Employee product and barcode manager; add `?filter=reorder` to open the Low Stock Alerts view.
 - `/invoices` — Signed-in invoice list.
 - `/invoice/:id` and `/receipt/:id` — Digital receipt routes.
 - `/customers`, `/reports`, `/settings` — Owner-only portals.
@@ -43,11 +44,11 @@ VITE_SUPABASE_ANON_KEY=your-anon-key
 ```
 Recommended tables and columns:
 - `profiles(id uuid primary key references auth.users, full_name text, role text, workspace_id uuid)`
-- `products(id, workspace_id, sku, barcode, name, price, cost_price, tax or tax_rate, stock, min_stock_alert)`
+- `products(id, workspace_id, sku, barcode, name, price, cost_price, tax or tax_rate, stock, reorder_level, min_stock_alert)`
 - `invoices` with workspace, customer, totals, status, and payment method fields.
 - `invoice_items` related to invoices and products, including `product_id`, `product_name`, `quantity`, `unit_price`, and `tax_rate`.
 
-Enable RLS and workspace policies appropriate to Owner/Employee/Customer roles before using production billing data. If using legacy `inventory_count` or `tax_rate` columns, update the product payload or migrate the schema consistently. For persistent profit analytics, ensure `products.cost_price` is populated for every sellable product.
+Enable RLS and workspace policies appropriate to Owner/Employee/Customer roles before using production billing data. Add `reorder_level integer not null default 5` to `public.products` if it is not already present, and ensure `cost_price` is a real column so product create/update payloads persist both fields directly. If using legacy `inventory_count` or `tax_rate` columns, update the product payload or migrate the schema consistently. For persistent profit analytics, ensure `products.cost_price` is populated for every sellable product. Inline stock adjustments update `public.products.stock` with workspace scoping.
 
 ## Development
 ```bash

@@ -1,7 +1,7 @@
 /* eslint-disable react-refresh/only-export-components */
 import { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { createClient } from '@supabase/supabase-js'
 import { QRCodeSVG } from 'qrcode.react'
 import { Html5Qrcode } from 'html5-qrcode'
@@ -29,7 +29,7 @@ async function findProduct(key) {
   if (!normalized) return null
   if (supabase) {
     const { data, error } = await supabase.from('products').select('*').or(`barcode.eq.${normalized},sku.eq.${normalized}`).maybeSingle()
-    if (!error && data) return { ...data, price: Number(data.price), cost_price: Number(data.cost_price ?? data.costPrice ?? 0), tax: Number(data.tax ?? data.tax_rate ?? 0), tax_rate: Number(data.tax_rate ?? data.tax ?? 0), stock: Number(data.stock ?? data.inventory_count ?? 0) }
+    if (!error && data) return { ...data, price: Number(data.price), cost_price: Number(data.cost_price ?? data.costPrice ?? 0), tax: Number(data.tax ?? data.tax_rate ?? 0), tax_rate: Number(data.tax_rate ?? data.tax ?? 0), stock: Number(data.stock ?? data.inventory_count ?? 0), reorder_level: Number(data.reorder_level ?? data.reorderLevel ?? 5) }
     if (error) console.warn('Product lookup failed:', error.message)
   }
   return products.find(item => item.barcode === normalized || item.sku.toLowerCase() === normalized.toLowerCase()) || null
@@ -76,7 +76,7 @@ async function loadProducts(workspaceId) {
   if (workspaceId) query = query.eq('workspace_id', workspaceId)
   const { data, error } = await query
   if (error) { toast.error(`Failed to load inventory: ${error.message}`); return [] }
-  return (data || []).map(item => ({ ...item, price: Number(item.price), cost_price: Number(item.cost_price ?? item.costPrice ?? 0), tax: Number(item.tax ?? item.tax_rate ?? 0), stock: item.stock == null && item.inventory_count == null ? null : Number(item.stock ?? item.inventory_count), min_stock_alert: Number(item.min_stock_alert ?? item.minStockAlert ?? 10) }))
+  return (data || []).map(item => ({ ...item, price: Number(item.price), cost_price: Number(item.cost_price ?? item.costPrice ?? 0), tax: Number(item.tax ?? item.tax_rate ?? 0), stock: item.stock == null && item.inventory_count == null ? null : Number(item.stock ?? item.inventory_count), min_stock_alert: Number(item.min_stock_alert ?? item.minStockAlert ?? 10), reorder_level: Number(item.reorder_level ?? item.reorderLevel ?? 5) }))
 }
 
 async function decrementStock(items, workspaceId) {
@@ -316,8 +316,10 @@ function POS({ onInvoice, catalog }) {
 }
 
 function PaymentModal({ total, onClose, onComplete }) { const [method, setMethod] = useState('UPI'); const upiLink = `upi://pay?pa=billflow@upi&pn=BillFlow&am=${total}&cu=INR`; return <div className="modal-backdrop"><section className="modal payment-modal"><div className="modal-head"><div><p className="eyebrow">SECURE CHECKOUT</p><h3>Collect {money(total)}</h3></div><button className="close-btn" onClick={onClose}><Icon name="close"/></button></div><div className="payment-methods">{['UPI', 'Cash', 'Card'].map(item => <button key={item} className={method === item ? 'selected' : ''} onClick={() => setMethod(item)}>{item}</button>)}</div>{method === 'UPI' && <div className="upi-panel"><div className="qr-placeholder">QR</div><p>Scan with any UPI app</p><a href={upiLink}>Open UPI payment</a></div>}<button className="primary-btn full" onClick={() => onComplete(method)}><Icon name="check" size={16}/> Mark {method} paid</button></section></div> }
-function Inventory({ catalog, onCreate, onUpdate, onDelete }) {
-  const emptyForm = { name: '', sku: '', barcode: '', price: '', cost_price: '', stock: '', min_stock_alert: '10', tax: '18' }
+function Inventory({ catalog, onCreate, onUpdate, onDelete, onAdjustStock }) {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const showReorderOnly = searchParams.get('filter') === 'reorder'
+  const emptyForm = { name: '', sku: '', barcode: '', price: '', cost_price: '', stock: '', min_stock_alert: '10', reorder_level: '5', tax: '18' }
   const [form, setForm] = useState(emptyForm)
   const [editingId, setEditingId] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -345,6 +347,19 @@ function Inventory({ catalog, onCreate, onUpdate, onDelete }) {
     updateField('barcode', barcode)
     checkBarcode(barcode)
   }
+  const getStockStatus = item => {
+    const stock = item.stock == null ? null : Number(item.stock)
+    const reorderLevel = Number(item.reorder_level ?? item.reorderLevel ?? 5)
+    if (stock === 0) return { label: 'Out of Stock', className: 'stock-status out-of-stock' }
+    if (stock != null && stock <= reorderLevel) return { label: 'Low Stock', className: 'stock-status low-stock' }
+    return { label: 'In Stock', className: 'stock-status in-stock' }
+  }
+  const lowStockItems = catalog.filter(item => item.stock != null && Number(item.stock) <= Number(item.reorder_level ?? item.reorderLevel ?? 5))
+  const visibleCatalog = showReorderOnly ? lowStockItems : catalog
+  const setReorderFilter = enabled => {
+    if (enabled) setSearchParams({ filter: 'reorder' })
+    else setSearchParams({})
+  }
 
   const submit = async event => {
     event.preventDefault()
@@ -353,7 +368,7 @@ function Inventory({ catalog, onCreate, onUpdate, onDelete }) {
       return
     }
     setBusy(true)
-    const product = { ...form, name: form.name.trim(), sku: form.sku.trim(), barcode: form.barcode.trim(), price: Number(form.price), cost_price: Number(form.cost_price || 0), tax: Number(form.tax || 0), stock: form.stock === '' ? null : Number(form.stock), min_stock_alert: Number(form.min_stock_alert || 0) }
+    const product = { ...form, name: form.name.trim(), sku: form.sku.trim(), barcode: form.barcode.trim(), price: Number(form.price), cost_price: Number(form.cost_price || 0), tax: Number(form.tax || 0), stock: form.stock === '' ? null : Number(form.stock), min_stock_alert: Number(form.min_stock_alert || 0), reorder_level: Number(form.reorder_level || 5) }
     if (barcodeStatus.startsWith('Barcode already')) {
       setBusy(false)
       toast.error(barcodeStatus)
@@ -371,15 +386,16 @@ function Inventory({ catalog, onCreate, onUpdate, onDelete }) {
   const edit = item => {
     setEditingId(item.id || item.sku)
     setBarcodeStatus('')
-    setForm({ name: item.name || '', sku: item.sku || '', barcode: item.barcode || '', price: String(item.price ?? ''), cost_price: String(item.cost_price ?? item.costPrice ?? 0), tax: String(item.tax ?? 0), stock: item.stock == null ? '' : String(item.stock), min_stock_alert: String(item.min_stock_alert ?? 10) })
+    setForm({ name: item.name || '', sku: item.sku || '', barcode: item.barcode || '', price: String(item.price ?? ''), cost_price: String(item.cost_price ?? item.costPrice ?? 0), tax: String(item.tax ?? 0), stock: item.stock == null ? '' : String(item.stock), min_stock_alert: String(item.min_stock_alert ?? 10), reorder_level: String(item.reorder_level ?? item.reorderLevel ?? 5) })
   }
   const cancelEdit = () => { setEditingId(null); setForm(emptyForm); setBarcodeStatus('') }
 
   return <>
-    <section className="page-intro"><div><p className="muted">Inventory & Barcode Manager</p><small className="muted">Live product catalog from Supabase</small></div></section>
+    <section className="page-intro"><div><p className="muted">Inventory & Barcode Manager</p><small className="muted">Live product catalog from Supabase</small></div><button type="button" className={showReorderOnly ? 'secondary-btn selected-filter' : 'secondary-btn'} onClick={() => setReorderFilter(!showReorderOnly)}>Low Stock Alerts <b>{lowStockItems.length}</b></button></section>
+    <section className="panel low-stock-alert-panel"><div className="alert-panel-head"><div><p className="eyebrow">REORDER MONITOR</p><h3>Low Stock Alerts</h3><p className="muted">Products at or below their reorder level.</p></div><button type="button" className={showReorderOnly ? 'text-btn' : 'secondary-btn'} onClick={() => setReorderFilter(!showReorderOnly)}>{showReorderOnly ? 'Show all products' : 'View reorder items'}</button></div>{lowStockItems.length ? <div className="alert-items">{lowStockItems.map(item => { const status = getStockStatus(item); return <div className="alert-item" key={item.id || item.sku}><span><strong>{item.name}</strong><small>{item.stock == null ? 'Untracked stock' : `${item.stock} units on hand`} · reorder at {Number(item.reorder_level ?? 5)}</small></span><span className={status.className}>{status.label}</span></div> })}</div> : <p className="alert-clear">All tracked products are above their reorder levels.</p>}</section>
     <section className="panel invoice-page-panel inventory-manager">
-      <form className="inventory-form" onSubmit={submit}><h3>{editingId ? 'Edit product' : 'Add product'}</h3><div className="form-grid"><label>Product Name<input value={form.name} onChange={event => updateField('name', event.target.value)} placeholder="Premium Rice 5kg" required /></label><label>SKU<input value={form.sku} onChange={event => updateField('sku', event.target.value)} placeholder="RICE-5KG" required /></label><label>Barcode<div className="field-with-action"><input value={form.barcode} onChange={event => { updateField('barcode', event.target.value); checkBarcode(event.target.value) }} placeholder="Scan or enter barcode" /><button type="button" className="secondary-btn compact-btn" onClick={generateBarcode}>Generate Random Barcode</button></div>{barcodeStatus && <small className={barcodeStatus.startsWith('Barcode already') ? 'danger-text' : 'success-text'}>{barcodeStatus}</small>}</label><label>Price<input type="number" min="0" step="0.01" value={form.price} onChange={event => updateField('price', event.target.value)} required /></label><label>Cost Price<input type="number" min="0" step="0.01" value={form.cost_price} onChange={event => updateField('cost_price', event.target.value)} /></label><label>Stock Quantity<input type="number" min="0" step="1" value={form.stock} onChange={event => updateField('stock', event.target.value)} placeholder="Leave blank if untracked" /></label><label>Min Stock Alert<input type="number" min="0" step="1" value={form.min_stock_alert} onChange={event => updateField('min_stock_alert', event.target.value)} /></label><label>GST Rate (%)<input type="number" min="0" step="0.01" value={form.tax} onChange={event => updateField('tax', event.target.value)} /></label></div><div className="form-actions"><button className="primary-btn" disabled={busy}>{busy ? 'Saving…' : editingId ? 'Update product' : 'Add product'}</button>{editingId && <button type="button" className="secondary-btn" onClick={cancelEdit}>Cancel</button>}</div></form>
-      <div className="product-results">{catalog.length ? catalog.map(item => <div className="inventory-row" key={item.id || item.sku}><span><strong>{item.name}</strong><small>{item.sku} · {item.barcode || 'No barcode'} · {money(item.price)} · Cost {money(item.cost_price || 0)}</small></span><span className={item.stock != null && item.stock <= Number(item.min_stock_alert ?? 10) ? 'stock-low' : 'stock-ok'}>{item.stock == null ? 'Untracked stock' : item.stock <= Number(item.min_stock_alert ?? 10) ? `${item.stock} low stock` : `${item.stock} in stock`}</span><span className="inventory-actions"><button className="secondary-btn" onClick={() => printBarcodeLabel(item)} disabled={!item.barcode}>Print Barcode Label</button><button className="secondary-btn" onClick={() => edit(item)}>Edit</button><button className="text-btn danger-text" onClick={() => onDelete(item.id || item.sku)}>Delete</button></span></div>) : <div className="empty-friendly compact"><p>No products found in this workspace.</p></div>}</div>
+      <form className="inventory-form" onSubmit={submit}><h3>{editingId ? 'Edit product' : 'Add product'}</h3><div className="form-grid"><label>Product Name<input value={form.name} onChange={event => updateField('name', event.target.value)} placeholder="Premium Rice 5kg" required /></label><label>SKU<input value={form.sku} onChange={event => updateField('sku', event.target.value)} placeholder="RICE-5KG" required /></label><label>Barcode<div className="field-with-action"><input value={form.barcode} onChange={event => { updateField('barcode', event.target.value); checkBarcode(event.target.value) }} placeholder="Scan or enter barcode" /><button type="button" className="secondary-btn compact-btn" onClick={generateBarcode}>Generate Random Barcode</button></div>{barcodeStatus && <small className={barcodeStatus.startsWith('Barcode already') ? 'danger-text' : 'success-text'}>{barcodeStatus}</small>}</label><label>Price<input type="number" min="0" step="0.01" value={form.price} onChange={event => updateField('price', event.target.value)} required /></label><label>Cost Price<input type="number" min="0" step="0.01" value={form.cost_price} onChange={event => updateField('cost_price', event.target.value)} /></label><label>Stock Quantity<input type="number" min="0" step="1" value={form.stock} onChange={event => updateField('stock', event.target.value)} placeholder="Leave blank if untracked" /></label><label>Reorder Level<input type="number" min="0" step="1" value={form.reorder_level} onChange={event => updateField('reorder_level', event.target.value)} /></label><label>Min Stock Alert<input type="number" min="0" step="1" value={form.min_stock_alert} onChange={event => updateField('min_stock_alert', event.target.value)} /></label><label>GST Rate (%)<input type="number" min="0" step="0.01" value={form.tax} onChange={event => updateField('tax', event.target.value)} /></label></div><div className="form-actions"><button className="primary-btn" disabled={busy}>{busy ? 'Saving…' : editingId ? 'Update product' : 'Add product'}</button>{editingId && <button type="button" className="secondary-btn" onClick={cancelEdit}>Cancel</button>}</div></form>
+      <div className="product-results">{visibleCatalog.length ? visibleCatalog.map(item => { const status = getStockStatus(item); const itemId = item.id || item.sku; const stock = item.stock == null ? 0 : Number(item.stock); return <div className="inventory-row" key={itemId}><span><strong>{item.name}</strong><small>{item.sku} · {item.barcode || 'No barcode'} · {money(item.price)} · Cost {money(item.cost_price || 0)} · Reorder at {Number(item.reorder_level ?? 5)}</small></span><span className={status.className}>{item.stock == null ? 'Untracked stock' : `${status.label} · ${stock}`}</span><span className="stock-adjuster" aria-label={`Adjust stock for ${item.name}`}><button type="button" className="stock-adjust-btn" onClick={() => onAdjustStock(item, -1)} disabled={stock <= 0} aria-label={`Decrease ${item.name} stock`}>−</button><b>{item.stock == null ? '—' : stock}</b><button type="button" className="stock-adjust-btn" onClick={() => onAdjustStock(item, 1)} aria-label={`Increase ${item.name} stock`}>+</button></span><span className="inventory-actions"><button type="button" className="secondary-btn" onClick={() => printBarcodeLabel(item)} disabled={!item.barcode}>Print Barcode Label</button><button type="button" className="secondary-btn" onClick={() => edit(item)}>Edit</button><button type="button" className="text-btn danger-text" onClick={() => onDelete(itemId)}>Delete</button></span></div> }) : <div className="empty-friendly compact"><p>{showReorderOnly ? 'No products currently need reordering.' : 'No products found in this workspace.'}</p></div>}</div>
     </section>
   </>
 }
@@ -436,9 +452,11 @@ function calculateProfitAnalytics(invoices, catalog) {
 function Overview({ invoices, catalog }) {
   const analytics = calculateProfitAnalytics(invoices, catalog)
   const customerCount = new Set(invoices.map(item => item.customer).filter(Boolean)).size
+  const lowStockItems = catalog.filter(item => item.stock != null && Number(item.stock) <= Number(item.reorder_level ?? item.reorderLevel ?? 5))
   return <>
     <section className="welcome-row"><div><p className="eyebrow">Today · workspace snapshot</p><h2>Good morning, BillFlow <span>•</span></h2><p className="muted">Live performance from your workspace.</p></div><NavLink className="primary-btn" to="/pos"><Icon name="plus" size={17}/> Create your first bill</NavLink></section>
     <section className="stats-grid analytics-stats"><article className="stat-card"><div className="stat-icon blue"><Icon name="chart"/></div><div className="stat-copy"><span>Total revenue</span><strong>{money(analytics.revenue)}</strong><small>From invoice line items</small></div></article><article className="stat-card"><div className="stat-icon green"><Icon name="chart"/></div><div className="stat-copy"><span>Total net profit</span><strong>{money(analytics.profit)}</strong><small>Selling price less cost price</small></div></article><article className="stat-card"><div className="stat-icon purple"><Icon name="chart"/></div><div className="stat-copy"><span>Gross margin</span><strong>{analytics.margin.toFixed(1)}%</strong><small>Profit ÷ revenue</small></div></article><article className="stat-card"><div className="stat-icon peach"><Icon name="invoice"/></div><div className="stat-copy"><span>Average order value</span><strong>{money(analytics.aov)}</strong><small>{analytics.orderCount} orders</small></div></article><article className="stat-card"><div className="stat-icon purple"><Icon name="invoice"/></div><div className="stat-copy"><span>Total invoices</span><strong>{invoices.length}</strong><small>Live from workspace</small></div></article><article className="stat-card"><div className="stat-icon peach"><Icon name="users"/></div><div className="stat-copy"><span>Active customers</span><strong>{customerCount}</strong><small>Unique billed customers</small></div></article></section>
+    <section className="stock-attention-card"><div className="stock-attention-icon"><Icon name="invoice" size={21}/></div><div><p className="eyebrow">INVENTORY HEALTH</p><h3>Stock Attention Required</h3><p className="muted">{lowStockItems.length ? `${lowStockItems.length} product${lowStockItems.length === 1 ? '' : 's'} at or below the reorder level.` : 'All tracked products are above their reorder levels.'}</p></div><NavLink to="/inventory?filter=reorder" className="secondary-btn">Review inventory <Icon name="arrow" size={15}/></NavLink></section>
     <section className="panel top-products-panel"><div className="panel-heading"><div><h3>Top Best-Selling Items</h3><p className="muted">Ranked by quantity sold from invoices</p></div></div>{analytics.topProducts.length ? <div className="top-products-table"><div className="top-products-head"><span>Product</span><span>Qty sold</span><span>Revenue</span><span>Profit</span></div>{analytics.topProducts.map(item => <div className="top-product-row" key={item.name}><strong>{item.name}</strong><span>{item.quantity}</span><span>{money(item.revenue)}</span><b>{money(item.profit)}</b></div>)}</div> : <EmptyState title="No sales data yet" text="Create an invoice to see best-selling products and profit analytics." action="Open billing counter"/>}</section>
     <section className="panel recent-panel"><div className="panel-heading"><div><h3>Recent invoices</h3><p className="muted">Your latest billing activity</p></div><NavLink to="/invoices" className="view-all">View all <Icon name="arrow" size={15}/></NavLink></div>{invoices.length ? <InvoiceTable invoices={invoices.slice(0, 5)}/> : <EmptyState title="Your dashboard is ready" text="Create your first bill to see revenue, customers, and invoice activity here." action="Open billing counter"/>}</section>
   </>
@@ -471,7 +489,7 @@ function App() { const [user, setUser] = useState(() => supabase ? null : getDem
       toast.error(`Failed to add product: ${error.message}`)
       return false
     }
-    const normalized = { ...product, ...created, price: Number(created.price), cost_price: Number(created.cost_price ?? product.cost_price ?? 0), tax: Number(created.tax ?? created.tax_rate ?? 0), stock: created.stock == null ? null : Number(created.stock), min_stock_alert: Number(created.min_stock_alert ?? product.min_stock_alert ?? 10) }
+    const normalized = { ...product, ...created, price: Number(created.price), cost_price: Number(created.cost_price ?? product.cost_price ?? 0), tax: Number(created.tax ?? created.tax_rate ?? 0), stock: created.stock == null ? null : Number(created.stock), min_stock_alert: Number(created.min_stock_alert ?? product.min_stock_alert ?? 10), reorder_level: Number(created.reorder_level ?? product.reorder_level ?? 5) }
     setCatalog(current => [normalized, ...current])
     toast.success('Product added to inventory')
     return true
@@ -488,9 +506,30 @@ function App() { const [user, setUser] = useState(() => supabase ? null : getDem
       toast.error(`Failed to update product: ${error.message}`)
       return false
     }
-    const normalized = { ...product, ...updated, price: Number(updated.price), cost_price: Number(updated.cost_price ?? product.cost_price ?? 0), tax: Number(updated.tax ?? updated.tax_rate ?? 0), stock: updated.stock == null ? null : Number(updated.stock), min_stock_alert: Number(updated.min_stock_alert ?? product.min_stock_alert ?? 10) }
+    const normalized = { ...product, ...updated, price: Number(updated.price), cost_price: Number(updated.cost_price ?? product.cost_price ?? 0), tax: Number(updated.tax ?? updated.tax_rate ?? 0), stock: updated.stock == null ? null : Number(updated.stock), min_stock_alert: Number(updated.min_stock_alert ?? product.min_stock_alert ?? 10), reorder_level: Number(updated.reorder_level ?? product.reorder_level ?? 5) }
     setCatalog(current => current.map(item => (item.id || item.sku) === id ? normalized : item))
     toast.success('Product updated')
+    return true
+  }
+  const adjustStock = async (product, delta) => {
+    const currentStock = product.stock == null ? 0 : Number(product.stock)
+    const nextStock = Math.max(0, currentStock + Number(delta || 0))
+    if (nextStock === currentStock) return false
+    const productId = product.id || product.sku
+    if (!supabase) {
+      updateCatalogStocks([{ id: product.id, sku: product.sku, stock: nextStock }])
+      toast.success(`${product.name} stock updated`)
+      return true
+    }
+    let query = supabase.from('products').update({ stock: nextStock }).eq(product.id ? 'id' : 'sku', productId)
+    if (user?.workspace_id) query = query.eq('workspace_id', user.workspace_id)
+    const { data, error } = await query.select('id, sku, stock').maybeSingle()
+    if (error || !data) {
+      toast.error(error?.message || `Failed to update stock for ${product.name}`)
+      return false
+    }
+    updateCatalogStocks([{ id: data.id, sku: data.sku || product.sku, stock: Number(data.stock) }])
+    toast.success(`${product.name} stock updated`)
     return true
   }
   const deleteProduct = async id => {
@@ -538,6 +577,6 @@ function App() { const [user, setUser] = useState(() => supabase ? null : getDem
     toast.success('Invoice created — inventory updated')
     return true
   }
-  return <BrowserRouter>{user ? <Layout user={user} darkMode={darkMode} onToggleTheme={() => setDarkMode(value => !value)} onLogout={async () => { await supabase?.auth.signOut(); localStorage.removeItem('billflow-user'); setUser(null) }}><Routes><Route path="/" element={<Protected user={user} roles={['Owner']}><Overview invoices={invoices} catalog={catalog}/></Protected>}/><Route path="/pos" element={<Protected user={user} roles={['Owner', 'Employee']}><ErrorBoundary><POS onInvoice={createInvoice} catalog={catalog}/></ErrorBoundary></Protected>}/><Route path="/invoices" element={<Invoices invoices={invoices}/>}/><Route path="/invoice/:id" element={<InvoiceDetail invoices={invoices}/>}/><Route path="/receipt/:id" element={<InvoiceDetail invoices={invoices}/>}/><Route path="/inventory" element={<Protected user={user} roles={['Owner', 'Employee']}><Inventory catalog={catalog} onCreate={createProduct} onUpdate={updateProduct} onDelete={deleteProduct}/></Protected>}/><Route path="/customers" element={<Protected user={user} roles={['Owner']}><SimplePage title="Customer management" text="Owner-only customer records and billing history."/></Protected>}/><Route path="/reports" element={<Protected user={user} roles={['Owner']}><Reports invoices={invoices}/></Protected>}/><Route path="/settings" element={<Protected user={user} roles={['Owner']}><Settings/></Protected>}/><Route path="*" element={<Navigate to="/invoices" replace/>}/></Routes></Layout> : <Routes><Route path="/invoice/:id" element={<InvoiceDetail invoices={invoices}/>}/><Route path="/receipt/:id" element={<InvoiceDetail invoices={invoices}/>}/><Route path="*" element={<Auth onAuth={nextUser => { localStorage.setItem('billflow-user', JSON.stringify(nextUser)); setUser(nextUser) }}/>}/></Routes>}<Toaster position="bottom-right"/></BrowserRouter> }
+  return <BrowserRouter>{user ? <Layout user={user} darkMode={darkMode} onToggleTheme={() => setDarkMode(value => !value)} onLogout={async () => { await supabase?.auth.signOut(); localStorage.removeItem('billflow-user'); setUser(null) }}><Routes><Route path="/" element={<Protected user={user} roles={['Owner']}><Overview invoices={invoices} catalog={catalog}/></Protected>}/><Route path="/pos" element={<Protected user={user} roles={['Owner', 'Employee']}><ErrorBoundary><POS onInvoice={createInvoice} catalog={catalog}/></ErrorBoundary></Protected>}/><Route path="/invoices" element={<Invoices invoices={invoices}/>}/><Route path="/invoice/:id" element={<InvoiceDetail invoices={invoices}/>}/><Route path="/receipt/:id" element={<InvoiceDetail invoices={invoices}/>}/><Route path="/inventory" element={<Protected user={user} roles={['Owner', 'Employee']}><Inventory catalog={catalog} onCreate={createProduct} onUpdate={updateProduct} onDelete={deleteProduct} onAdjustStock={adjustStock}/></Protected>}/><Route path="/customers" element={<Protected user={user} roles={['Owner']}><SimplePage title="Customer management" text="Owner-only customer records and billing history."/></Protected>}/><Route path="/reports" element={<Protected user={user} roles={['Owner']}><Reports invoices={invoices}/></Protected>}/><Route path="/settings" element={<Protected user={user} roles={['Owner']}><Settings/></Protected>}/><Route path="*" element={<Navigate to="/invoices" replace/>}/></Routes></Layout> : <Routes><Route path="/invoice/:id" element={<InvoiceDetail invoices={invoices}/>}/><Route path="/receipt/:id" element={<InvoiceDetail invoices={invoices}/>}/><Route path="*" element={<Auth onAuth={nextUser => { localStorage.setItem('billflow-user', JSON.stringify(nextUser)); setUser(nextUser) }}/>}/></Routes>}<Toaster position="bottom-right"/></BrowserRouter> }
 
 createRoot(document.getElementById('root')).render(<ErrorBoundary><App /></ErrorBoundary>)
