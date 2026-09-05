@@ -317,7 +317,6 @@ function CameraScannerModal({ onCode, onClose }) {
     onCloseRef.current = onClose
   }, [onCode, onClose])
   const [message, setMessage] = useState('Requesting camera permission…')
-  const [continuous, setContinuous] = useState(true)
   const [scanConfirmed, setScanConfirmed] = useState(false)
   const scannerId = 'billflow-camera-modal-reader'
 
@@ -340,20 +339,18 @@ function CameraScannerModal({ onCode, onClose }) {
           try { playBarcodeBeep() } catch (error) { console.warn('Barcode beep unavailable:', error) }
           const added = await onCodeRef.current(decoded)
           if (!added) setMessage(`Scanned ${decoded}, but no matching product was found`)
-          if (!continuous) {
-            window.setTimeout(() => { if (mounted) onCloseRef.current() }, 450)
-            return
-          }
+          window.setTimeout(() => {
+            if (mounted) setScanConfirmed(false)
+          }, 1500)
           window.setTimeout(() => {
             if (!mounted) return
             scanLockRef.current = false
-            setScanConfirmed(false)
             setMessage('Ready — scan the next barcode')
             try { scanner.resume() } catch (error) { console.warn('Camera resume unavailable:', error) }
-          }, 1500)
+          }, 2000)
         }
         await scanner.start({ facingMode: 'environment' }, { fps: 12, qrbox: { width: 320, height: 110 }, aspectRatio: 1.777, disableFlip: false, formatsToSupport: [Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.EAN_8, Html5QrcodeSupportedFormats.UPC_A, Html5QrcodeSupportedFormats.UPC_E, Html5QrcodeSupportedFormats.CODE_128, Html5QrcodeSupportedFormats.CODE_39, Html5QrcodeSupportedFormats.ITF] }, handleDecoded, () => {})
-        if (mounted) setMessage(continuous ? 'Scanning continuously — 1.5s delay after each scan' : 'Scan Single Item & Close')
+        if (mounted) setMessage('Scanning continuously — 2s delay after each scan')
       } catch (error) {
         if (mounted) setMessage(error?.message?.toLowerCase().includes('permission') ? 'Camera permission was denied. Enable it in browser settings.' : 'Camera could not start. Check camera access and HTTPS, then use manual entry.')
         scannerRef.current = null
@@ -372,9 +369,9 @@ function CameraScannerModal({ onCode, onClose }) {
         })()
       }
     }
-  }, [continuous])
+  }, [])
 
-  return <div className="modal-backdrop"><section className="modal camera-modal"><div className="modal-head"><div><p className="eyebrow">CAMERA SCANNER</p><h3>Scan barcode</h3></div><button className="close-btn" onClick={onClose}><Icon name="close"/></button></div><div className="scan-mode-toggle"><button className={!continuous ? 'selected' : ''} onClick={() => setContinuous(false)}>Scan Single Item & Close</button><button className={continuous ? 'selected' : ''} onClick={() => setContinuous(true)}>Continuous Multi-Item</button></div><div className="camera-box is-scanning"><div id={scannerId} className="camera-reader"/><div className="scanner-frame" aria-hidden="true"><i/><i/><i/><i/></div>{scanConfirmed && <div className="scan-confirmation" aria-live="polite">✓</div>}</div><small className="muted">{message}</small></section></div>
+  return <div className="modal-backdrop" onClick={event => event.target === event.currentTarget && onCloseRef.current()}><section className="modal camera-modal"><div className="modal-head"><div><p className="eyebrow">CAMERA SCANNER</p><h3>Scan Barcode</h3></div><button className="close-btn" onClick={onClose}><Icon name="close"/></button></div><div className="camera-box is-scanning"><div id={scannerId} className="camera-reader"/><div className="scanner-frame" aria-hidden="true"><i/><i/><i/><i/></div>{scanConfirmed && <div className="scan-confirmation" aria-live="polite">✓</div>}</div><small className="muted">{message}</small></section></div>
 }
 
 function Scanner({ onCode }) {
