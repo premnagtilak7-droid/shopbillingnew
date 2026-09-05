@@ -122,18 +122,6 @@ async function updateProductWithSchemaFallback(product, target, id, workspaceId)
   return { data: null, error: new Error('The products table has too many unsupported columns. Check its schema.') }
 }
 
-async function insertInvoiceWithSchemaFallback(payload) {
-  let candidate = { ...payload }
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    const result = await supabase.from('invoices').insert(candidate).select('*').single()
-    if (!result.error) return result
-    const column = missingColumnName(result.error)
-    if (!isMissingProductColumn(result.error) || !column || !(column in candidate)) return result
-    delete candidate[column]
-  }
-  return { data: null, error: new Error('The invoices table has too many unsupported columns. Check its schema.') }
-}
-
 async function loadProducts(workspaceId) {
   if (!supabase) return products
   let query = supabase.from('products').select('*').order('name')
@@ -755,12 +743,10 @@ function App() { const [user, setUser] = useState(() => supabase ? null : getDem
     }
     return null
   }
-  const refreshStaff = async () => { if (user?.workspace_id) setStaff(await loadStaff(user.workspace_id)) }
   const createStaff = async details => {
     if (!supabase) { setStaff(current => [...current, { id: `demo-${Date.now()}`, full_name: details.full_name, email: details.email, role: details.role, is_active: true, last_active_at: null, ...profilePermissions({ role: details.role }) }]); toast.success('Staff member added in preview mode'); return true }
-    const { data, error } = await supabase.functions.invoke('create-staff', { body: { ...details, workspace_id: user.workspace_id } })
-    if (error || data?.error) { toast.error(error?.message || data.error); return false }
-    toast.success('Staff credentials created securely'); await refreshStaff(); return true
+    toast.error('Create the staff member in Supabase Auth first, then refresh this workspace. The standard browser client cannot create Auth users securely.')
+    return false
   }
   const updateStaff = async (id, updates) => {
     if (!supabase) { setStaff(current => current.map(profile => profile.id === id ? { ...profile, ...updates } : profile)); toast.success('Permissions saved'); return true }
@@ -769,7 +755,7 @@ function App() { const [user, setUser] = useState(() => supabase ? null : getDem
     setStaff(current => current.map(profile => profile.id === id ? data : profile)); toast.success('Permissions saved directly to public.profiles'); return true
   }
   const deactivateStaff = async profile => { if (!window.confirm(`Deactivate ${profile.full_name || 'this staff member'}?`)) return false; return updateStaff(profile.id, { is_active: false }) }
-  const resetStaffPin = async profile => { const pin = window.prompt(`Enter a new 4-8 digit PIN for ${profile.full_name || 'this staff member'}`); if (!/^\d{4,8}$/.test(pin || '')) return toast.error('PIN must contain 4 to 8 digits'); if (!supabase) return toast.success('PIN reset in preview mode'); const { error } = await supabase.functions.invoke('create-staff', { body: { action: 'reset_pin', user_id: profile.id, pin, workspace_id: user.workspace_id } }); if (error) return toast.error(error.message); toast.success('PIN reset securely') }
+  const resetStaffPin = async profile => { const pin = window.prompt(`Enter a new 4-digit PIN for ${profile.full_name || 'this staff member'}`); if (!/^\d{4}$/.test(pin || '')) return toast.error('PIN must contain exactly 4 digits'); if (!supabase) return toast.success('PIN reset in preview mode'); const { error } = await supabase.from('profiles').update({ pin_hash: await hashPin(pin) }).eq('id', profile.id).eq('workspace_id', user.workspace_id); if (error) return toast.error(`PIN reset failed: ${error.message}`); toast.success('PIN reset securely') }
   const createProduct = async product => {
     if (!supabase) {
       const localProduct = { ...product, id: product.sku }
@@ -846,31 +832,34 @@ function App() { const [user, setUser] = useState(() => supabase ? null : getDem
     return true
   }
   const createInvoice = async data => {
-    const stockResult = await decrementStock(data.items || [], user?.workspace_id)
-    if (!stockResult.ok) return false
     const invoiceNumber = `INV-${1050 + invoices.length}`
     if (supabase) {
-      const payload = { invoice_number: invoiceNumber, customer_name: data.customer, customer_id: data.customer_id || null, subtotal: data.subtotal, tax: data.tax, total: data.total, discount: data.discount || 0, status: data.status, payment_method: data.payment, created_by_staff_id: activeOperator?.id || user?.id, ...(user?.workspace_id ? { workspace_id: user.workspace_id } : {}) }
-      const { data: created, error } = await insertInvoiceWithSchemaFallback(payload)
-      if (error) {
-        toast.error(`Failed to create invoice: ${error.message}`)
-        return false
+      const payload = {
+        invoice_number: invoiceNumber,
+        customer_name: String(data.customer || 'Walk-in customer'),
+        subtotal: Number(data.subtotal || 0),
+        tax: Number(data.tax || 0),
+        total: Number(data.total || 0),
+        status: String(data.status || 'Paid'),
+        payment_method: String(data.payment || 'Cash'),
+        ...(user?.workspace_id ? { workspace_id: user.workspace_id } : {})
       }
+      const { data: created, error } = await supabase.from('invoices').insert(payload).select('*').single()
+      if (error) { toast.error(`Failed to create invoice: ${error.message}`); return false }
       if (data.items?.length && created?.id) {
-        const lines = data.items.map(item => ({ invoice_id: created.id, workspace_id: user?.workspace_id, product_id: item.id || null, product_name: item.name, quantity: item.quantity, unit_price: item.price, tax_rate: item.tax, line_total: item.price * item.quantity * (1 + item.tax / 100) }))
+        const lines = data.items.map(item => ({ invoice_id: created.id, product_id: item.id || null, product_name: String(item.name || ''), quantity: Number(item.quantity || 0), unit_price: Number(item.price || 0), tax_rate: Number(item.tax || item.tax_rate || 0), line_total: Number(item.price || 0) * Number(item.quantity || 0) * (1 + Number(item.tax || item.tax_rate || 0) / 100) }))
         const { error: lineError } = await supabase.from('invoice_items').insert(lines)
-        if (lineError) {
-          toast.error(`Invoice created, but line items failed: ${lineError.message}`)
-          return false
-        }
+        if (lineError) { toast.error(`Invoice created, but line items failed: ${lineError.message}`); return false }
       }
     }
+    const stockResult = await decrementStock(data.items || [], user?.workspace_id)
+    if (!stockResult.ok) { toast.error('Payment saved, but inventory could not be updated. Review stock levels.'); return true }
     const invoice = { ...data, id: invoiceNumber, date: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) }
     setInvoices(prev => [invoice, ...prev])
     updateCatalogStocks(stockResult.updates)
     toast.success('Invoice created — inventory updated')
     return true
   }
-  return <BrowserRouter>{user ? <Layout user={activeOperator || user} darkMode={darkMode} onToggleTheme={() => setDarkMode(value => !value)} onLockRegister={() => setRegisterLocked(true)} onLogout={async () => { await supabase?.auth.signOut(); localStorage.removeItem('billflow-user'); setUser(null) }}><Routes><Route path="/" element={<Protected user={activeOperator || user} roles={['Owner']}><Overview invoices={invoices} catalog={catalog}/></Protected>}/><Route path="/pos" element={<Protected user={activeOperator || user} roles={['Owner', 'Employee']}><ErrorBoundary><POS onInvoice={createInvoice} catalog={catalog} user={user} operator={activeOperator} permissions={activeOperator?.permissions || user.permissions || profilePermissions(user)} branding={branding} onOwnerOverride={action => setOverrideAction(() => action)}/></ErrorBoundary></Protected>}/><Route path="/invoices" element={<Invoices invoices={invoices}/>}/><Route path="/invoice/:id" element={<InvoiceDetail invoices={invoices} branding={branding}/>}/><Route path="/receipt/:id" element={<InvoiceDetail invoices={invoices} branding={branding}/>}/><Route path="/inventory" element={<Protected user={activeOperator || user} roles={['Owner', 'Employee']}>{user.role === 'Owner' || user.permissions?.can_edit_inventory ? <Inventory catalog={catalog} onCreate={createProduct} onUpdate={updateProduct} onDelete={deleteProduct} onAdjustStock={adjustStock}/> : <SimplePage title="Inventory access restricted" text="Your owner can grant inventory editing permission from Settings." icon="barcode"/>}</Protected>}/><Route path="/customers" element={<Protected user={activeOperator || user} roles={['Owner']}><SimplePage title="Customer management" text="Owner-only customer records and billing history."/></Protected>}/><Route path="/reports" element={<Protected user={activeOperator || user} roles={['Owner']}><Reports invoices={invoices}/></Protected>}/><Route path="/settings" element={<Protected user={activeOperator || user} roles={['Owner']}><Settings branding={branding} onSaveBranding={saveBranding} staff={staff} onCreateStaff={createStaff} onUpdateStaff={updateStaff} onResetPin={resetStaffPin} onDeactivate={deactivateStaff}/></Protected>}/><Route path="*" element={<Navigate to="/invoices" replace/>}/></Routes>{registerLocked && <RegisterLock user={activeOperator || user} onSwitchUser={switchRegisterOperator} onUnlock={nextOperator => { setActiveOperator(nextOperator); setRegisterLocked(false) }} onLogout={async () => { await supabase?.auth.signOut(); localStorage.removeItem('billflow-user'); setUser(null) }}/>} {overrideAction && <OwnerOverrideModal onClose={() => setOverrideAction(null)} onConfirm={() => { const action = overrideAction; setOverrideAction(null); action?.() }}/>}</Layout> : <Routes><Route path="/invoice/:id" element={<InvoiceDetail invoices={invoices} branding={branding}/>}/><Route path="/receipt/:id" element={<InvoiceDetail invoices={invoices} branding={branding}/>}/><Route path="*" element={<Auth onAuth={nextUser => { localStorage.setItem('billflow-user', JSON.stringify(nextUser)); setUser(nextUser) }}/>}/></Routes>}<Toaster position="bottom-right"/></BrowserRouter> }
+  return <BrowserRouter>{user ? <Layout user={activeOperator || user} darkMode={darkMode} onToggleTheme={() => setDarkMode(value => !value)} onLockRegister={() => setRegisterLocked(true)} onLogout={async () => { await supabase?.auth.signOut(); localStorage.removeItem('billflow-user'); setUser(null) }}><Routes><Route path="/" element={<Protected user={activeOperator || user} roles={['Owner']}><Overview invoices={invoices} catalog={catalog}/></Protected>}/><Route path="/pos" element={<Protected user={activeOperator || user} roles={['Owner', 'Employee']}><ErrorBoundary><POS onInvoice={createInvoice} catalog={catalog} user={user} operator={activeOperator} permissions={activeOperator?.permissions || user.permissions || profilePermissions(user)} branding={branding} onOwnerOverride={action => setOverrideAction(() => action)}/></ErrorBoundary></Protected>}/><Route path="/invoices" element={<Invoices invoices={invoices}/>}/><Route path="/invoice/:id" element={<InvoiceDetail invoices={invoices} branding={branding}/>}/><Route path="/receipt/:id" element={<InvoiceDetail invoices={invoices} branding={branding}/>}/><Route path="/inventory" element={<Protected user={activeOperator || user} roles={['Owner', 'Employee']}>{activeOperator?.role === 'Owner' || activeOperator?.permissions?.can_edit_inventory ? <Inventory catalog={catalog} onCreate={createProduct} onUpdate={updateProduct} onDelete={deleteProduct} onAdjustStock={adjustStock}/> : <SimplePage title="Inventory access restricted" text="Your owner can grant inventory editing permission from Settings." icon="barcode"/>}</Protected>}/><Route path="/customers" element={<Protected user={activeOperator || user} roles={['Owner']}><SimplePage title="Customer management" text="Owner-only customer records and billing history."/></Protected>}/><Route path="/reports" element={<Protected user={activeOperator || user} roles={['Owner']}><Reports invoices={invoices}/></Protected>}/><Route path="/settings" element={<Protected user={activeOperator || user} roles={['Owner']}><Settings branding={branding} onSaveBranding={saveBranding} staff={staff} onCreateStaff={createStaff} onUpdateStaff={updateStaff} onResetPin={resetStaffPin} onDeactivate={deactivateStaff}/></Protected>}/><Route path="*" element={<Navigate to="/invoices" replace/>}/></Routes>{registerLocked && <RegisterLock user={activeOperator || user} onSwitchUser={switchRegisterOperator} onUnlock={nextOperator => { setActiveOperator(nextOperator); setRegisterLocked(false) }} onLogout={async () => { await supabase?.auth.signOut(); localStorage.removeItem('billflow-user'); setUser(null) }}/>} {overrideAction && <OwnerOverrideModal onClose={() => setOverrideAction(null)} onConfirm={() => { const action = overrideAction; setOverrideAction(null); action?.() }}/>}</Layout> : <Routes><Route path="/invoice/:id" element={<InvoiceDetail invoices={invoices} branding={branding}/>}/><Route path="/receipt/:id" element={<InvoiceDetail invoices={invoices} branding={branding}/>}/><Route path="*" element={<Auth onAuth={nextUser => { localStorage.setItem('billflow-user', JSON.stringify(nextUser)); setUser(nextUser) }}/>}/></Routes>}<Toaster position="bottom-right"/></BrowserRouter> }
 
 createRoot(document.getElementById('root')).render(<ErrorBoundary><App /></ErrorBoundary>)
