@@ -122,6 +122,18 @@ async function updateProductWithSchemaFallback(product, target, id, workspaceId)
   return { data: null, error: new Error('The products table has too many unsupported columns. Check its schema.') }
 }
 
+async function insertInvoiceWithSchemaFallback(payload) {
+  let candidate = { ...payload }
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const result = await supabase.from('invoices').insert(candidate).select('*').single()
+    if (!result.error) return result
+    const column = missingColumnName(result.error)
+    if (!isMissingProductColumn(result.error) || !column || !(column in candidate)) return result
+    delete candidate[column]
+  }
+  return { data: null, error: new Error('The invoices table has too many unsupported columns. Check its schema.') }
+}
+
 async function loadProducts(workspaceId) {
   if (!supabase) return products
   let query = supabase.from('products').select('*').order('name')
@@ -788,7 +800,7 @@ function App() { const [user, setUser] = useState(() => supabase ? null : getDem
     const invoiceNumber = `INV-${1050 + invoices.length}`
     if (supabase) {
       const payload = { invoice_number: invoiceNumber, customer_name: data.customer, subtotal: data.subtotal, tax: data.tax, total: data.total, discount: data.discount || 0, status: data.status, payment_method: data.payment, ...(user?.workspace_id ? { workspace_id: user.workspace_id } : {}) }
-      const { data: created, error } = await supabase.from('invoices').insert(payload).select('*').single()
+      const { data: created, error } = await insertInvoiceWithSchemaFallback(payload)
       if (error) {
         toast.error(`Failed to create invoice: ${error.message}`)
         return false
