@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client'
 import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { createClient } from '@supabase/supabase-js'
 import { QRCodeSVG } from 'qrcode.react'
-import { Html5Qrcode } from 'html5-qrcode'
+import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode'
 import JsBarcode from 'jsbarcode'
 import { jsPDF } from 'jspdf'
 import ErrorBoundary from './components/ErrorBoundary'
@@ -352,7 +352,7 @@ function CameraScannerModal({ onCode, onClose }) {
             try { scanner.resume() } catch (error) { console.warn('Camera resume unavailable:', error) }
           }, 1500)
         }
-        await scanner.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: 280, height: 140 }, aspectRatio: 1.777 }, handleDecoded, () => {})
+        await scanner.start({ facingMode: 'environment' }, { fps: 12, qrbox: { width: 320, height: 110 }, aspectRatio: 1.777, disableFlip: false, formatsToSupport: [Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.EAN_8, Html5QrcodeSupportedFormats.UPC_A, Html5QrcodeSupportedFormats.UPC_E, Html5QrcodeSupportedFormats.CODE_128, Html5QrcodeSupportedFormats.CODE_39, Html5QrcodeSupportedFormats.ITF] }, handleDecoded, () => {})
         if (mounted) setMessage(continuous ? 'Scanning continuously — 1.5s delay after each scan' : 'Scan Single Item & Close')
       } catch (error) {
         if (mounted) setMessage(error?.message?.toLowerCase().includes('permission') ? 'Camera permission was denied. Enable it in browser settings.' : 'Camera could not start. Check camera access and HTTPS, then use manual entry.')
