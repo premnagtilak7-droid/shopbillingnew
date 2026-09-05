@@ -310,6 +310,7 @@ function ProductSearch({ onAdd, products: catalog }) { const [query, setQuery] =
 function CameraScannerModal({ onCode, onClose }) {
   const scannerRef = useRef(null)
   const scanLockRef = useRef(false)
+  const cooldownTimerRef = useRef(null)
   const onCodeRef = useRef(onCode)
   const onCloseRef = useRef(onClose)
   useEffect(() => {
@@ -335,19 +336,18 @@ function CameraScannerModal({ onCode, onClose }) {
           scanLockRef.current = true
           setScanConfirmed(true)
           setMessage('Barcode captured ✓')
-          try { scanner.pause(true) } catch (error) { console.warn('Camera pause unavailable:', error) }
           try { playBarcodeBeep() } catch (error) { console.warn('Barcode beep unavailable:', error) }
+          cooldownTimerRef.current = window.setTimeout(() => {
+            if (!mounted) return
+            scanLockRef.current = false
+            setScanConfirmed(false)
+            setMessage('Ready — scan the next barcode')
+          }, 1000)
           const added = await onCodeRef.current(decoded)
           if (!added) setMessage(`Scanned ${decoded}, but no matching product was found`)
           window.setTimeout(() => {
             if (mounted) setScanConfirmed(false)
-          }, 1500)
-          window.setTimeout(() => {
-            if (!mounted) return
-            scanLockRef.current = false
-            setMessage('Ready — scan the next barcode')
-            try { scanner.resume() } catch (error) { console.warn('Camera resume unavailable:', error) }
-          }, 1000)
+          }, 750)
         }
         await scanner.start({ facingMode: 'environment' }, { fps: 12, qrbox: { width: 320, height: 110 }, aspectRatio: 1.777, disableFlip: false, formatsToSupport: [Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.EAN_8, Html5QrcodeSupportedFormats.UPC_A, Html5QrcodeSupportedFormats.UPC_E, Html5QrcodeSupportedFormats.CODE_128, Html5QrcodeSupportedFormats.CODE_39, Html5QrcodeSupportedFormats.ITF] }, handleDecoded, () => {})
         if (mounted) setMessage('Scanning continuously — 1s delay after each scan')
@@ -360,6 +360,7 @@ function CameraScannerModal({ onCode, onClose }) {
     return () => {
       mounted = false
       scanLockRef.current = true
+      if (cooldownTimerRef.current) window.clearTimeout(cooldownTimerRef.current)
       const scanner = scannerRef.current
       scannerRef.current = null
       if (scanner) {
