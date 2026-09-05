@@ -25,16 +25,18 @@ Deno.serve(async request => {
     if (workspaceId !== owner.workspace_id) return json({ error: 'Workspace mismatch' }, 403)
 
     if (body.action === 'reset_pin') {
-      if (!/^\d{4,8}$/.test(body.pin || '')) return json({ error: 'PIN must contain 4 to 8 digits' }, 400)
+      if (!/^\d{4}$/.test(body.pin || '')) return json({ error: 'PIN must contain exactly 4 digits' }, 400)
       const { error } = await admin.from('profiles').update({ pin_hash: await hashPin(body.pin) }).eq('id', body.user_id).eq('workspace_id', workspaceId)
       if (error) return json({ error: error.message }, 400)
       return json({ ok: true })
     }
 
-    if (!body.email || !body.full_name || !/^\d{4,8}$/.test(body.access_pin || '')) return json({ error: 'Name, email, and a 4 to 8 digit PIN are required' }, 400)
-    const { data: created, error: createError } = await admin.auth.admin.createUser({ email: body.email, email_confirm: true, user_metadata: { full_name: body.full_name, role: body.role || 'employee' } })
+    if (!body.email || !body.full_name || !/^\d{4}$/.test(body.access_pin || '')) return json({ error: 'Name, email, and an exactly 4 digit PIN are required' }, 400)
+    const staffRole = String(body.role || 'cashier').toLowerCase()
+    if (!['cashier', 'manager'].includes(staffRole)) return json({ error: 'Staff role must be cashier or manager' }, 400)
+    const { data: created, error: createError } = await admin.auth.admin.createUser({ email: body.email, email_confirm: true, user_metadata: { full_name: body.full_name, role: staffRole } })
     if (createError || !created.user) return json({ error: createError?.message || 'Unable to create auth user' }, 400)
-    const { error: profileError } = await admin.from('profiles').insert({ id: created.user.id, full_name: body.full_name, role: String(body.role || 'employee').toLowerCase(), workspace_id: workspaceId, pin_hash: await hashPin(body.access_pin), is_active: true })
+    const { error: profileError } = await admin.from('profiles').insert({ id: created.user.id, full_name: body.full_name, role: staffRole, owner_id: caller.id, username: body.username || body.email, workspace_id: workspaceId, pin_hash: await hashPin(body.access_pin), is_active: true })
     if (profileError) { await admin.auth.admin.deleteUser(created.user.id); return json({ error: profileError.message }, 400) }
     return json({ ok: true, user_id: created.user.id })
   } catch (error) { return json({ error: error instanceof Error ? error.message : 'Unexpected error' }, 500) }
