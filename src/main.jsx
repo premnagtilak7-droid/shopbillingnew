@@ -415,11 +415,15 @@ function PaymentModal({ total, canApplyDiscounts, branding, onClose, onComplete 
 function Inventory({ catalog, onCreate, onUpdate, onDelete, onAdjustStock }) {
   const [searchParams, setSearchParams] = useSearchParams()
   const showReorderOnly = searchParams.get('filter') === 'reorder'
-  const emptyForm = { name: '', sku: '', barcode: '', price: '', cost_price: '', stock: '', min_stock_alert: '10', reorder_level: '5', tax: '18' }
+  const emptyForm = { name: '', sku: '', barcode: '', category: '', image_url: '', description: '', price: '', cost_price: '', stock: '', min_stock_alert: '10', reorder_level: '5', tax: '18' }
   const [form, setForm] = useState(emptyForm)
   const [editingId, setEditingId] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [lookupBusy, setLookupBusy] = useState(false)
+  const [cameraOpen, setCameraOpen] = useState(false)
   const [barcodeStatus, setBarcodeStatus] = useState('')
+  const barcodeRef = useRef(null)
+  useEffect(() => { barcodeRef.current?.focus() }, [editingId])
   const updateField = (field, value) => setForm(current => ({ ...current, [field]: value }))
   const checkBarcode = value => {
     const normalized = String(value || '').trim()
@@ -427,12 +431,36 @@ function Inventory({ catalog, onCreate, onUpdate, onDelete, onAdjustStock }) {
     const existing = catalog.find(item => String(item.barcode || '').trim() === normalized && (item.id || item.sku) !== editingId)
     setBarcodeStatus(existing ? `Barcode already belongs to ${existing.name}` : 'Barcode is available')
   }
+  const lookupBarcode = async value => {
+    const normalized = String(value || '').trim()
+    if (!normalized || normalized.length < 6) return
+    const existing = catalog.find(item => String(item.barcode || '').trim() === normalized && (item.id || item.sku) !== editingId)
+    if (existing) {
+      setBarcodeStatus(`Already in inventory: ${existing.name}. Edit this product to adjust its stock.`)
+      setForm(current => ({ ...current, barcode: normalized, name: existing.name || current.name, category: existing.category || current.category, image_url: existing.image_url || current.image_url, description: existing.description || current.description }))
+      return
+    }
+    setLookupBusy(true)
+    try {
+      const response = await fetch(`https://world.openfoodfacts.org/api/v0/product/${encodeURIComponent(normalized)}.json`)
+      const result = await response.json()
+      if (result.status === 1 && result.product) {
+        const product = result.product
+        setForm(current => ({ ...current, barcode: normalized, name: current.name || product.product_name || product.product_name_en || '', category: current.category || product.categories || product.categories_tags?.[0]?.replace(/^en:/, '') || '', image_url: current.image_url || product.image_front_url || product.image_url || '', description: current.description || product.generic_name || product.ingredients_text || '' }))
+        setBarcodeStatus(`Open Food Facts match found${product.brands ? ` · ${product.brands}` : ''}`)
+      } else setBarcodeStatus('Barcode is available. Enter the product details below.')
+    } catch (error) {
+      console.warn('Open Food Facts lookup failed:', error)
+      setBarcodeStatus('Barcode is available. Product lookup was unavailable.')
+    } finally { setLookupBusy(false) }
+  }
   const scanInventoryBarcode = value => {
     const normalized = String(value || '').trim()
     if (!normalized) return
     updateField('barcode', normalized)
     checkBarcode(normalized)
-    playBarcodeBeep()
+    lookupBarcode(normalized)
+    try { playBarcodeBeep() } catch (error) { console.warn('Barcode beep unavailable:', error) }
     toast.success('Barcode captured')
   }
   useBarcodeScanner(scanInventoryBarcode, true)
@@ -465,7 +493,7 @@ function Inventory({ catalog, onCreate, onUpdate, onDelete, onAdjustStock }) {
     }
     setBusy(true)
     const product = { ...form, name: form.name.trim(), sku: form.sku.trim(), barcode: form.barcode.trim(), price: Number(form.price), cost_price: Number(form.cost_price || 0), tax: Number(form.tax || 0), stock: form.stock === '' ? null : Number(form.stock), min_stock_alert: Number(form.min_stock_alert || 0), reorder_level: Number(form.reorder_level || 5) }
-    if (barcodeStatus.startsWith('Barcode already')) {
+    if (/already in inventory|barcode already/i.test(barcodeStatus)) {
       setBusy(false)
       toast.error(barcodeStatus)
       return
@@ -482,7 +510,7 @@ function Inventory({ catalog, onCreate, onUpdate, onDelete, onAdjustStock }) {
   const edit = item => {
     setEditingId(item.id || item.sku)
     setBarcodeStatus('')
-    setForm({ name: item.name || '', sku: item.sku || '', barcode: item.barcode || '', price: String(item.price ?? ''), cost_price: String(item.cost_price ?? item.costPrice ?? 0), tax: String(item.tax ?? 0), stock: item.stock == null ? '' : String(item.stock), min_stock_alert: String(item.min_stock_alert ?? 10), reorder_level: String(item.reorder_level ?? item.reorderLevel ?? 5) })
+    setForm({ name: item.name || '', sku: item.sku || '', barcode: item.barcode || '', category: item.category || '', image_url: item.image_url || item.image || '', description: item.description || '', price: String(item.price ?? ''), cost_price: String(item.cost_price ?? item.costPrice ?? 0), tax: String(item.tax ?? 0), stock: item.stock == null ? '' : String(item.stock), min_stock_alert: String(item.min_stock_alert ?? 10), reorder_level: String(item.reorder_level ?? item.reorderLevel ?? 5) })
   }
   const cancelEdit = () => { setEditingId(null); setForm(emptyForm); setBarcodeStatus('') }
 
@@ -490,9 +518,9 @@ function Inventory({ catalog, onCreate, onUpdate, onDelete, onAdjustStock }) {
     <section className="page-intro"><div><p className="muted">Inventory & Barcode Manager</p><small className="muted">Live product catalog from Supabase</small></div><button type="button" className={showReorderOnly ? 'secondary-btn selected-filter' : 'secondary-btn'} onClick={() => setReorderFilter(!showReorderOnly)}>Low Stock Alerts <b>{lowStockItems.length}</b></button></section>
     <section className="panel low-stock-alert-panel"><div className="alert-panel-head"><div><p className="eyebrow">REORDER MONITOR</p><h3>Low Stock Alerts</h3><p className="muted">Products at or below their reorder level.</p></div><button type="button" className={showReorderOnly ? 'text-btn' : 'secondary-btn'} onClick={() => setReorderFilter(!showReorderOnly)}>{showReorderOnly ? 'Show all products' : 'View reorder items'}</button></div>{lowStockItems.length ? <div className="alert-items">{lowStockItems.map(item => { const status = getStockStatus(item); return <div className="alert-item" key={item.id || item.sku}><span><strong>{item.name}</strong><small>{item.stock == null ? 'Untracked stock' : `${item.stock} units on hand`} · reorder at {Number(item.reorder_level ?? 5)}</small></span><span className={status.className}>{status.label}</span></div> })}</div> : <p className="alert-clear">All tracked products are above their reorder levels.</p>}</section>
     <section className="panel invoice-page-panel inventory-manager">
-      <form className="inventory-form" onSubmit={submit}><h3>{editingId ? 'Edit product' : 'Add product'}</h3><div className="form-grid"><label>Product Name<input value={form.name} onChange={event => updateField('name', event.target.value)} placeholder="Premium Rice 5kg" required /></label><label>SKU<input value={form.sku} onChange={event => updateField('sku', event.target.value)} placeholder="RICE-5KG" required /></label><label>Barcode<div className="field-with-action"><input value={form.barcode} onChange={event => { updateField('barcode', event.target.value); checkBarcode(event.target.value) }} placeholder="Scan or enter barcode" /><button type="button" className="secondary-btn compact-btn" onClick={generateBarcode}>Generate Random Barcode</button></div>{barcodeStatus && <small className={barcodeStatus.startsWith('Barcode already') ? 'danger-text' : 'success-text'}>{barcodeStatus}</small>}</label><label>Price<input type="number" min="0" step="0.01" value={form.price} onChange={event => updateField('price', event.target.value)} required /></label><label>Cost Price<input type="number" min="0" step="0.01" value={form.cost_price} onChange={event => updateField('cost_price', event.target.value)} /></label><label>Stock Quantity<input type="number" min="0" step="1" value={form.stock} onChange={event => updateField('stock', event.target.value)} placeholder="Leave blank if untracked" /></label><label>Reorder Level<input type="number" min="0" step="1" value={form.reorder_level} onChange={event => updateField('reorder_level', event.target.value)} /></label><label>Min Stock Alert<input type="number" min="0" step="1" value={form.min_stock_alert} onChange={event => updateField('min_stock_alert', event.target.value)} /></label><label>GST Rate (%)<input type="number" min="0" step="0.01" value={form.tax} onChange={event => updateField('tax', event.target.value)} /></label></div><div className="form-actions"><button className="primary-btn" disabled={busy}>{busy ? 'Saving…' : editingId ? 'Update product' : 'Add product'}</button>{editingId && <button type="button" className="secondary-btn" onClick={cancelEdit}>Cancel</button>}</div></form>
+      <form className="inventory-form" onSubmit={submit}><h3>{editingId ? 'Edit product' : 'Add product'}</h3><div className="form-grid"><label>Product Name<input value={form.name} onChange={event => updateField('name', event.target.value)} placeholder="Premium Rice 5kg" required /></label><label>SKU<input value={form.sku} onChange={event => updateField('sku', event.target.value)} placeholder="RICE-5KG" required /></label><label>Barcode<div className="field-with-action"><input ref={barcodeRef} value={form.barcode} onChange={event => { updateField('barcode', event.target.value); checkBarcode(event.target.value) }} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); lookupBarcode(event.currentTarget.value) } }} onBlur={event => lookupBarcode(event.target.value)} placeholder="Scan or enter barcode" autoFocus /><button type="button" className="secondary-btn compact-btn" onClick={() => setCameraOpen(true)}>Camera Scan</button><button type="button" className="secondary-btn compact-btn" onClick={generateBarcode}>Generate Random Barcode</button></div>{lookupBusy && <small className="muted">Looking up barcode…</small>}{barcodeStatus && <small className={barcodeStatus.startsWith('Already') || barcodeStatus.startsWith('Barcode already') ? 'danger-text' : 'success-text'}>{barcodeStatus}</small>}</label><label>Category<input value={form.category} onChange={event => updateField('category', event.target.value)} placeholder="Groceries" /></label><label>Image URL<input value={form.image_url} onChange={event => updateField('image_url', event.target.value)} placeholder="https://.../product.jpg" /></label><label className="wide">Description<textarea value={form.description} onChange={event => updateField('description', event.target.value)} placeholder="Product description" rows="2" /></label><label>Price<input type="number" min="0" step="0.01" value={form.price} onChange={event => updateField('price', event.target.value)} required /></label><label>Cost Price<input type="number" min="0" step="0.01" value={form.cost_price} onChange={event => updateField('cost_price', event.target.value)} /></label><label>Stock Quantity<input type="number" min="0" step="1" value={form.stock} onChange={event => updateField('stock', event.target.value)} placeholder="Leave blank if untracked" /></label><label>Reorder Level<input type="number" min="0" step="1" value={form.reorder_level} onChange={event => updateField('reorder_level', event.target.value)} /></label><label>Min Stock Alert<input type="number" min="0" step="1" value={form.min_stock_alert} onChange={event => updateField('min_stock_alert', event.target.value)} /></label><label>GST Rate (%)<input type="number" min="0" step="0.01" value={form.tax} onChange={event => updateField('tax', event.target.value)} /></label></div><div className="form-actions"><button className="primary-btn" disabled={busy}>{busy ? 'Saving…' : editingId ? 'Update product' : 'Add product'}</button>{editingId && <button type="button" className="secondary-btn" onClick={cancelEdit}>Cancel</button>}</div></form>
       <div className="product-results">{visibleCatalog.length ? visibleCatalog.map(item => { const status = getStockStatus(item); const itemId = item.id || item.sku; const stock = item.stock == null ? 0 : Number(item.stock); return <div className="inventory-row" key={itemId}><span><strong>{item.name}</strong><small>{item.sku} · {item.barcode || 'No barcode'} · {money(item.price)} · Cost {money(item.cost_price || 0)} · Reorder at {Number(item.reorder_level ?? 5)}</small></span><span className={status.className}>{item.stock == null ? 'Untracked stock' : `${status.label} · ${stock}`}</span><span className="stock-adjuster" aria-label={`Adjust stock for ${item.name}`}><button type="button" className="stock-adjust-btn" onClick={() => onAdjustStock(item, -1)} disabled={stock <= 0} aria-label={`Decrease ${item.name} stock`}>−</button><b>{item.stock == null ? '—' : stock}</b><button type="button" className="stock-adjust-btn" onClick={() => onAdjustStock(item, 1)} aria-label={`Increase ${item.name} stock`}>+</button></span><span className="inventory-actions"><button type="button" className="secondary-btn" onClick={() => printBarcodeLabel(item)} disabled={!item.barcode}>Print Barcode Label</button><button type="button" className="secondary-btn" onClick={() => edit(item)}>Edit</button><button type="button" className="text-btn danger-text" onClick={() => onDelete(itemId)}>Delete</button></span></div> }) : <div className="empty-friendly compact"><p>{showReorderOnly ? 'No products currently need reordering.' : 'No products found in this workspace.'}</p></div>}</div>
-    </section>
+    </section>{cameraOpen && <CameraScannerModal onCode={code => { setCameraOpen(false); scanInventoryBarcode(code) }} onClose={() => setCameraOpen(false)}/>} 
   </>
 }
 function InvoiceTable({ invoices }) { const navigate = useNavigate(); return <div className="table-scroll"><table><thead><tr><th>Invoice</th><th>Customer</th><th>Date</th><th>Amount</th><th>Status</th><th></th></tr></thead><tbody>{invoices.map(item => <tr key={item.id}><td><strong className="invoice-id">{item.id}</strong></td><td>{item.customer}</td><td className="muted">{item.date}</td><td><strong>{money(item.total || item.items?.reduce((sum, x) => sum + x.price * x.quantity * (1 + x.tax / 100), 0) || 0)}</strong></td><td><span className={`status ${item.status.toLowerCase()}`}><i/>{item.status}</span></td><td><button className="more-btn" onClick={() => navigate(`/invoice/${item.id}`)}><Icon name="arrow" size={16}/></button></td></tr>)}</tbody></table></div> }

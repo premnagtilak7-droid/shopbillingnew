@@ -19,6 +19,7 @@ BillFlow is a React + Vite POS and GST billing workspace for small shops, with S
 - Granular employee permissions for checkout discounts, cart item removal, reports, and inventory editing. Unauthorized cart removal can request an Owner PIN override.
 - Step 4 workspace branding: Owner-only Store & Invoice Branding controls for store identity, contact details, GSTIN, UPI ID, logo URL/upload, and receipt footer notes.
 - Branding persists to the workspace-scoped `public.workspace_settings` table and renders in POS thermal receipts, dynamic UPI checkout QR codes, digital receipt pages, and downloadable PDF invoices.
+- Step 5 inventory barcode enrichment: focused barcode field, duplicate workspace lookup, Open Food Facts auto-fill for product name/category/image/description, Enter/blur lookup triggers, and optional camera scan support.
 
 ## Staff management and permissions
 `public.profiles` now supports `owner` and `employee` roles plus `can_apply_discounts`, `can_delete_cart_items`, `can_view_reports`, `can_edit_inventory`, `is_active`, `last_active_at`, and a server-only `pin_hash`. Apply `supabase/step3_staff_management.sql` in Supabase before using the directory. Owners manage profiles in their workspace through RLS; employees are least-privilege by default.
