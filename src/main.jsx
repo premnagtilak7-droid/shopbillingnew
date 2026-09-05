@@ -347,10 +347,10 @@ function CameraScannerModal({ onCode, onClose }) {
             scanLockRef.current = false
             setMessage('Ready — scan the next barcode')
             try { scanner.resume() } catch (error) { console.warn('Camera resume unavailable:', error) }
-          }, 2000)
+          }, 1000)
         }
         await scanner.start({ facingMode: 'environment' }, { fps: 12, qrbox: { width: 320, height: 110 }, aspectRatio: 1.777, disableFlip: false, formatsToSupport: [Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.EAN_8, Html5QrcodeSupportedFormats.UPC_A, Html5QrcodeSupportedFormats.UPC_E, Html5QrcodeSupportedFormats.CODE_128, Html5QrcodeSupportedFormats.CODE_39, Html5QrcodeSupportedFormats.ITF] }, handleDecoded, () => {})
-        if (mounted) setMessage('Scanning continuously — 2s delay after each scan')
+        if (mounted) setMessage('Scanning continuously — 1s delay after each scan')
       } catch (error) {
         if (mounted) setMessage(error?.message?.toLowerCase().includes('permission') ? 'Camera permission was denied. Enable it in browser settings.' : 'Camera could not start. Check camera access and HTTPS, then use manual entry.')
         scannerRef.current = null
