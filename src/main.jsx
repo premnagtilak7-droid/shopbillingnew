@@ -66,13 +66,23 @@ async function loadWorkspaceBranding(workspaceId) {
   return normalizeBranding(data)
 }
 
-async function findProduct(key) {
+const normalizeProductRecord = data => data ? ({ ...data, price: Number(data.price), cost_price: Number(data.cost_price ?? data.costPrice ?? 0), tax: Number(data.tax ?? data.tax_rate ?? 0), tax_rate: Number(data.tax_rate ?? data.tax ?? 0), stock: Number(data.stock ?? data.inventory_count ?? 0), reorder_level: Number(data.reorder_level ?? data.reorderLevel ?? 5) }) : null
+
+async function findProduct(key, workspaceId) {
   const normalized = String(key || '').trim()
   if (!normalized) return null
   if (supabase) {
-    const { data, error } = await supabase.from('products').select('*').or(`barcode.eq.${normalized},sku.eq.${normalized}`).maybeSingle()
-    if (!error && data) return { ...data, price: Number(data.price), cost_price: Number(data.cost_price ?? data.costPrice ?? 0), tax: Number(data.tax ?? data.tax_rate ?? 0), tax_rate: Number(data.tax_rate ?? data.tax ?? 0), stock: Number(data.stock ?? data.inventory_count ?? 0), reorder_level: Number(data.reorder_level ?? data.reorderLevel ?? 5) }
-    if (error) console.warn('Product lookup failed:', error.message)
+    let barcodeQuery = supabase.from('products').select('*').eq('barcode', normalized)
+    if (workspaceId) barcodeQuery = barcodeQuery.eq('workspace_id', workspaceId)
+    const barcodeResult = await barcodeQuery.maybeSingle()
+    if (barcodeResult.error) console.warn('Barcode product lookup failed:', barcodeResult.error.message)
+    if (barcodeResult.data) return normalizeProductRecord(barcodeResult.data)
+
+    let skuQuery = supabase.from('products').select('*').ilike('sku', normalized)
+    if (workspaceId) skuQuery = skuQuery.eq('workspace_id', workspaceId)
+    const skuResult = await skuQuery.maybeSingle()
+    if (skuResult.error) console.warn('SKU product lookup failed:', skuResult.error.message)
+    if (skuResult.data) return normalizeProductRecord(skuResult.data)
   }
   return products.find(item => item.barcode === normalized || item.sku.toLowerCase() === normalized.toLowerCase()) || null
 }
@@ -321,14 +331,15 @@ function CameraScannerModal({ onCode, onClose }) {
       try {
         const scanner = new Html5Qrcode(scannerId)
         scannerRef.current = scanner
-        const handleDecoded = decoded => {
+        const handleDecoded = async decoded => {
           if (!mounted || scanLockRef.current) return
           scanLockRef.current = true
           setScanConfirmed(true)
           setMessage('Barcode captured ✓')
           try { scanner.pause(true) } catch (error) { console.warn('Camera pause unavailable:', error) }
           try { playBarcodeBeep() } catch (error) { console.warn('Barcode beep unavailable:', error) }
-          onCodeRef.current(decoded)
+          const added = await onCodeRef.current(decoded)
+          if (!added) setMessage(`Scanned ${decoded}, but no matching product was found`)
           if (!continuous) {
             window.setTimeout(() => { if (mounted) onCloseRef.current() }, 450)
             return
@@ -403,21 +414,22 @@ function POS({ onInvoice, catalog, user, permissions, branding, onOwnerOverride 
 
   const code = async value => {
     const normalized = String(value || '').trim()
-    if (!normalized) return
+    if (!normalized) return false
     let product
     try {
-      product = await findProduct(normalized)
+      product = await findProduct(normalized, user?.workspace_id)
     } catch (error) {
       console.error('Barcode product lookup failed:', error)
-      toast.error('Unable to look up product')
-      return
+      toast.error(`Unable to look up barcode ${normalized}`)
+      return false
     }
     if (product) {
       try { playBarcodeBeep() } catch (error) { console.warn('Barcode beep unavailable:', error) }
       add(normalizeScannedProduct(product))
-    } else {
-      toast.error('Product not found')
+      return true
     }
+    toast.error(`Product not found for barcode ${normalized}`)
+    return false
   }
 
   useBarcodeScanner(code, true)
@@ -501,6 +513,7 @@ function Inventory({ catalog, onCreate, onUpdate, onDelete, onAdjustStock }) {
     lookupBarcode(normalized)
     try { playBarcodeBeep() } catch (error) { console.warn('Barcode beep unavailable:', error) }
     toast.success('Barcode captured')
+    return true
   }
   useBarcodeScanner(scanInventoryBarcode, true)
   const generateBarcode = () => {
