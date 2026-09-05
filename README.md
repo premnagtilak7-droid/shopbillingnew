@@ -17,6 +17,8 @@ BillFlow is a React + Vite POS and GST billing workspace for small shops, with S
 - UPI/Cash/Card checkout, public digital receipt routes, copy/share actions, WhatsApp sharing, dark/light mode, responsive layout, and SPA deployment configuration.
 - Step 3 staff management: owner-only Employee Management, active staff directory, Supabase profile permission updates, secure staff provisioning Edge Function, PIN reset/deactivation actions, and register lock overlay.
 - Granular employee permissions for checkout discounts, cart item removal, reports, and inventory editing. Unauthorized cart removal can request an Owner PIN override.
+- Step 4 workspace branding: Owner-only Store & Invoice Branding controls for store identity, contact details, GSTIN, UPI ID, logo URL/upload, and receipt footer notes.
+- Branding persists to the workspace-scoped `public.workspace_settings` table and renders in POS thermal receipts, dynamic UPI checkout QR codes, digital receipt pages, and downloadable PDF invoices.
 
 ## Staff management and permissions
 `public.profiles` now supports `owner` and `employee` roles plus `can_apply_discounts`, `can_delete_cart_items`, `can_view_reports`, `can_edit_inventory`, `is_active`, `last_active_at`, and a server-only `pin_hash`. Apply `supabase/step3_staff_management.sql` in Supabase before using the directory. Owners manage profiles in their workspace through RLS; employees are least-privilege by default.
@@ -54,6 +56,7 @@ VITE_SUPABASE_ANON_KEY=your-anon-key
 ```
 Recommended tables and columns:
 - `profiles(id uuid primary key references auth.users, full_name text, role text, workspace_id uuid)`
+- `workspace_settings(workspace_id uuid primary key, store_name, tagline, address, contact_phone, contact_email, tax_id, upi_id, logo_url, footer_note, updated_at)` — see `supabase/step4_branding.sql`.
 - `products(id, workspace_id, sku, barcode, name, price, cost_price, tax or tax_rate, stock, reorder_level, min_stock_alert)`
 - `invoices` with workspace, customer, totals, status, and payment method fields.
 - `invoice_items` related to invoices and products, including `product_id`, `product_name`, `quantity`, `unit_price`, and `tax_rate`.
