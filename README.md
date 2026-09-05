@@ -22,6 +22,7 @@ BillFlow is a React + Vite POS and GST billing workspace for small shops, with S
 - Step 5 inventory barcode enrichment: focused barcode field, duplicate workspace lookup, Open Food Facts auto-fill for product name/category/image/description, Enter/blur lookup triggers, and optional camera scan support.
 - Responsive/performance pass: mobile slide-over navigation, touch-friendly mobile table cards, horizontal overflow protection, debounced searches, memoized product/invoice lists, and 50-item inventory pagination with Load More.
 - Step 6 multi-tenant architecture: workspace-scoped staff roles, Owner-linked cashier/manager profiles, PIN-based register switching, invoice creator metadata, workspace-scoped invoice items/customers, and POS customer lookup/quick-create.
+- Commercial SaaS redesign: public marketing landing page, pricing tiers, dashboard preview, dedicated `/login` and `/signup` routes, password visibility control, responsive auth layout, and polished indigo/slate theme surfaces.
 
 ## Staff management and permissions
 `public.profiles` now supports `owner` and `employee` roles plus `can_apply_discounts`, `can_delete_cart_items`, `can_view_reports`, `can_edit_inventory`, `is_active`, `last_active_at`, and a server-only `pin_hash`. Apply `supabase/step3_staff_management.sql` in Supabase before using the directory. Owners manage profiles in their workspace through RLS; employees are least-privilege by default.
