@@ -204,10 +204,17 @@ const normalizeScannedProduct = product => ({
   tax_rate: Number(product?.tax_rate ?? product?.tax ?? 0),
   tax: Number(product?.tax ?? product?.tax_rate ?? 0),
   stock: Number(product?.stock || 0),
+  id: product?.id || null,
   barcode: String(product?.barcode || ''),
   name: String(product?.name || 'Unnamed Item'),
   sku: String(product?.sku || product?.barcode || product?.name || 'ITEM')
 })
+
+const sameCartProduct = (left, right) => {
+  if (left?.id && right?.id) return String(left.id) === String(right.id)
+  if (left?.barcode && right?.barcode) return String(left.barcode) === String(right.barcode)
+  return Boolean(left?.sku && right?.sku) && String(left.sku).toLowerCase() === String(right.sku).toLowerCase()
+}
 const initials = name => name.split(' ').map(part => part[0]).join('').slice(0, 2).toUpperCase()
 const getDemoUser = () => {
   try { return JSON.parse(localStorage.getItem('billflow-user')) || null } catch { return null }
@@ -292,7 +299,16 @@ function Protected({ user, roles, children }) { return roles.includes(user.role)
 function ProductSearch({ onAdd, products: catalog }) { const [query, setQuery] = useState(''); const matches = catalog.filter(item => `${item.name} ${item.sku} ${item.barcode}`.toLowerCase().includes(query.toLowerCase())); return <section className="panel product-search"><div className="search-box"><Icon name="search" size={17}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search product, SKU or barcode…" /></div><div className="product-results">{matches.map(item => <button key={item.sku} onClick={() => onAdd(item)}><span><strong>{item.name}</strong><small>{item.sku} · {item.barcode}</small></span><b>{money(item.price)}</b></button>)}</div></section> }
 function CameraScannerModal({ onCode, onClose }) {
   const scannerRef = useRef(null)
+  const scanLockRef = useRef(false)
+  const onCodeRef = useRef(onCode)
+  const onCloseRef = useRef(onClose)
+  useEffect(() => {
+    onCodeRef.current = onCode
+    onCloseRef.current = onClose
+  }, [onCode, onClose])
   const [message, setMessage] = useState('Requesting camera permission…')
+  const [continuous, setContinuous] = useState(true)
+  const [scanConfirmed, setScanConfirmed] = useState(false)
   const scannerId = 'billflow-camera-modal-reader'
 
   useEffect(() => {
@@ -305,8 +321,28 @@ function CameraScannerModal({ onCode, onClose }) {
       try {
         const scanner = new Html5Qrcode(scannerId)
         scannerRef.current = scanner
-        await scanner.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: 280, height: 140 }, aspectRatio: 1.777 }, decoded => onCode(decoded), () => {})
-        if (mounted) setMessage('Scanning continuously — point at a barcode')
+        const handleDecoded = decoded => {
+          if (!mounted || scanLockRef.current) return
+          scanLockRef.current = true
+          setScanConfirmed(true)
+          setMessage('Barcode captured ✓')
+          try { scanner.pause(true) } catch (error) { console.warn('Camera pause unavailable:', error) }
+          try { playBarcodeBeep() } catch (error) { console.warn('Barcode beep unavailable:', error) }
+          onCodeRef.current(decoded)
+          if (!continuous) {
+            window.setTimeout(() => { if (mounted) onCloseRef.current() }, 450)
+            return
+          }
+          window.setTimeout(() => {
+            if (!mounted) return
+            scanLockRef.current = false
+            setScanConfirmed(false)
+            setMessage('Ready — scan the next barcode')
+            try { scanner.resume() } catch (error) { console.warn('Camera resume unavailable:', error) }
+          }, 1500)
+        }
+        await scanner.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: 280, height: 140 }, aspectRatio: 1.777 }, handleDecoded, () => {})
+        if (mounted) setMessage(continuous ? 'Scanning continuously — 1.5s delay after each scan' : 'Scan Single Item & Close')
       } catch (error) {
         if (mounted) setMessage(error?.message?.toLowerCase().includes('permission') ? 'Camera permission was denied. Enable it in browser settings.' : 'Camera could not start. Check camera access and HTTPS, then use manual entry.')
         scannerRef.current = null
@@ -315,6 +351,7 @@ function CameraScannerModal({ onCode, onClose }) {
     start()
     return () => {
       mounted = false
+      scanLockRef.current = true
       const scanner = scannerRef.current
       scannerRef.current = null
       if (scanner) {
@@ -324,9 +361,9 @@ function CameraScannerModal({ onCode, onClose }) {
         })()
       }
     }
-  }, [onCode])
+  }, [continuous])
 
-  return <div className="modal-backdrop"><section className="modal camera-modal"><div className="modal-head"><div><p className="eyebrow">CAMERA SCANNER</p><h3>Scan barcode</h3></div><button className="close-btn" onClick={onClose}><Icon name="close"/></button></div><div className="camera-box is-scanning"><div id={scannerId} className="camera-reader"/><div className="scanner-frame" aria-hidden="true"><i/><i/><i/><i/></div></div><small className="muted">{message}</small></section></div>
+  return <div className="modal-backdrop"><section className="modal camera-modal"><div className="modal-head"><div><p className="eyebrow">CAMERA SCANNER</p><h3>Scan barcode</h3></div><button className="close-btn" onClick={onClose}><Icon name="close"/></button></div><div className="scan-mode-toggle"><button className={!continuous ? 'selected' : ''} onClick={() => setContinuous(false)}>Scan Single Item & Close</button><button className={continuous ? 'selected' : ''} onClick={() => setContinuous(true)}>Continuous Multi-Item</button></div><div className="camera-box is-scanning"><div id={scannerId} className="camera-reader"/><div className="scanner-frame" aria-hidden="true"><i/><i/><i/><i/></div>{scanConfirmed && <div className="scan-confirmation" aria-live="polite">✓</div>}</div><small className="muted">{message}</small></section></div>
 }
 
 function Scanner({ onCode }) {
@@ -338,12 +375,12 @@ function Cart({ cart, setCart, onCheckout, canDeleteCartItems, onOwnerOverride }
   const subtotal = cart.reduce((sum, item) => sum + Number(item?.price || 0) * Number(item?.quantity || 0), 0)
   const tax = cart.reduce((sum, item) => sum + Number(item?.price || 0) * Number(item?.quantity || 0) * Number(item?.tax_rate ?? item?.tax ?? 0) / 100, 0)
   const total = subtotal + tax
-  const change = (sku, amount) => setCart(items => items.map(item => item.sku === sku ? { ...item, quantity: Math.max(0, Number(item.quantity || 0) + amount) } : item).filter(item => item.quantity))
+  const change = (target, amount) => setCart(items => items.map(item => sameCartProduct(item, target) ? { ...item, quantity: Math.max(0, Number(item.quantity || 0) + amount) } : item).filter(item => item.quantity))
   const remove = item => {
-    if (canDeleteCartItems) return setCart(items => items.filter(candidate => candidate.sku !== item.sku))
-    onOwnerOverride?.(() => setCart(items => items.filter(candidate => candidate.sku !== item.sku)))
+    if (canDeleteCartItems) return setCart(items => items.filter(candidate => !sameCartProduct(candidate, item)))
+    onOwnerOverride?.(() => setCart(items => items.filter(candidate => !sameCartProduct(candidate, item))))
   }
-  return <section className="panel cart-panel"><div className="panel-heading"><div><h3>Current cart</h3><p className="muted">{cart.reduce((sum, item) => sum + Number(item?.quantity || 0), 0)} items</p></div><button className="text-btn" onClick={() => canDeleteCartItems ? setCart([]) : onOwnerOverride?.(() => setCart([]))}>Clear</button></div>{cart.length === 0 ? <div className="empty-friendly compact"><Icon name="invoice" size={28}/><p>Scan or search products to begin.</p></div> : <div className="cart-lines">{cart.map(item => <div className="cart-line" key={item.sku}><div><strong>{item.name || 'Unnamed Item'}</strong><small>{item.sku || '—'} · {money(item.price)} + {Number(item.tax_rate ?? item.tax ?? 0)}% GST</small></div><div className="quantity"><button onClick={() => change(item.sku, -1)}>−</button><b>{item.quantity || 0}</b><button onClick={() => change(item.sku, 1)}>+</button></div><strong>{money(Number(item?.price || 0) * Number(item?.quantity || 0))}</strong><button className="remove-cart-btn" onClick={() => remove(item)} aria-label={`Remove ${item.name}`} title={canDeleteCartItems ? 'Remove item' : 'Owner PIN required'}>×</button></div>)}</div>}<div className="totals"><div><span>Subtotal</span><b>{money(subtotal)}</b></div><div><span>GST</span><b>{money(tax)}</b></div><div className="grand-total"><span>Total</span><strong>{money(total)}</strong></div></div><button className="primary-btn full" disabled={!cart.length} onClick={() => onCheckout({ subtotal, tax, total })}>Create invoice</button></section>
+  return <section className="panel cart-panel"><div className="panel-heading"><div><h3>Current cart</h3><p className="muted">{cart.reduce((sum, item) => sum + Number(item?.quantity || 0), 0)} items</p></div><button className="text-btn" onClick={() => canDeleteCartItems ? setCart([]) : onOwnerOverride?.(() => setCart([]))}>Clear</button></div>{cart.length === 0 ? <div className="empty-friendly compact"><Icon name="invoice" size={28}/><p>Scan or search products to begin.</p></div> : <div className="cart-lines">{cart.map(item => <div className="cart-line" key={item.id || `${item.barcode || item.sku}-${item.sku}`}><div><strong>{item.name || 'Unnamed Item'}</strong><small>{item.sku || '—'} · {money(item.price)} + {Number(item.tax_rate ?? item.tax ?? 0)}% GST</small></div><div className="quantity"><button onClick={() => change(item, -1)}>−</button><b>{item.quantity || 0}</b><button onClick={() => change(item, 1)}>+</button></div><strong>{money(Number(item?.price || 0) * Number(item?.quantity || 0))}</strong><button className="remove-cart-btn" onClick={() => remove(item)} aria-label={`Remove ${item.name}`} title={canDeleteCartItems ? 'Remove item' : 'Owner PIN required'}>×</button></div>)}</div>}<div className="totals"><div><span>Subtotal</span><b>{money(subtotal)}</b></div><div><span>GST</span><b>{money(tax)}</b></div><div className="grand-total"><span>Total</span><strong>{money(total)}</strong></div></div><button className="primary-btn full" disabled={!cart.length} onClick={() => onCheckout({ subtotal, tax, total })}>Create invoice</button></section>
 }
 
 function POS({ onInvoice, catalog, user, permissions, branding, onOwnerOverride }) {
@@ -354,9 +391,11 @@ function POS({ onInvoice, catalog, user, permissions, branding, onOwnerOverride 
   const [receiptData, setReceiptData] = useState(null)
   const add = product => {
     const safeProduct = normalizeScannedProduct(product)
-    setCart(items => items.some(item => item.sku === safeProduct.sku)
-      ? items.map(item => item.sku === safeProduct.sku ? { ...item, ...safeProduct, quantity: Number(item.quantity || 0) + 1 } : item)
-      : [...items, { ...safeProduct, quantity: 1 }])
+    setCart(previousCart => {
+      const existingIndex = previousCart.findIndex(item => sameCartProduct(item, safeProduct))
+      if (existingIndex === -1) return [...previousCart, { ...safeProduct, quantity: 1 }]
+      return previousCart.map((item, index) => index === existingIndex ? { ...item, ...safeProduct, quantity: Number(item.quantity || 0) + 1 } : item)
+    })
     setManual('')
     try { navigator.vibrate?.(60) } catch (error) { console.warn('Vibration unavailable:', error) }
     toast.success(`${safeProduct.name} added`)
