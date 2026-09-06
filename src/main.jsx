@@ -330,7 +330,7 @@ function Layout({ user, onLogout, onToggleTheme, darkMode, children }) { const [
 
 function Protected({ user, roles, children }) { return roles.includes(user.role) ? children : <Navigate to="/invoices" replace /> }
 const ProductSearch = memo(function ProductSearch({ onAdd, products: catalog }) { const [query, setQuery] = useState(''); const [debouncedQuery, setDebouncedQuery] = useState(''); useEffect(() => { const timer = window.setTimeout(() => setDebouncedQuery(query), 300); return () => window.clearTimeout(timer) }, [query]); const matches = useMemo(() => { const normalized = debouncedQuery.toLowerCase(); return catalog.filter(item => `${item.name} ${item.sku} ${item.barcode}`.toLowerCase().includes(normalized)).slice(0, 50) }, [catalog, debouncedQuery]); return <section className="panel product-search"><div className="search-box"><Icon name="search" size={17}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search product, SKU or barcode…" /></div><div className="product-results">{matches.map(item => <button key={item.id || item.sku} onClick={() => onAdd(item)}><span><strong>{item.name}</strong><small>{item.sku} · {item.barcode}</small></span><b>{money(item.price)}</b></button>)}</div></section> })
-function CameraScannerModal({ onCode, onClose }) {
+function CameraScannerModal({ onCode, onClose, onManualFallback = onClose }) {
   const scannerRef = useRef(null)
   const scanLockRef = useRef(false)
   const cooldownTimerRef = useRef(null)
@@ -341,6 +341,7 @@ function CameraScannerModal({ onCode, onClose }) {
     onCloseRef.current = onClose
   }, [onCode, onClose])
   const [message, setMessage] = useState('Requesting camera permission…')
+  const [cameraError, setCameraError] = useState(false)
   const [scanConfirmed, setScanConfirmed] = useState(false)
   const scannerId = 'billflow-camera-modal-reader'
 
@@ -348,7 +349,8 @@ function CameraScannerModal({ onCode, onClose }) {
     let mounted = true
     const start = async () => {
       if (!window.isSecureContext && location.hostname !== 'localhost') {
-        setMessage('Camera access requires HTTPS. Use a hardware scanner or manual entry.')
+        setCameraError(true)
+        setMessage('Camera access requires HTTPS. Use manual barcode search or enable HTTPS.')
         return
       }
       try {
@@ -372,10 +374,16 @@ function CameraScannerModal({ onCode, onClose }) {
             if (mounted) setScanConfirmed(false)
           }, 750)
         }
-        await scanner.start({ facingMode: 'environment' }, { fps: 12, qrbox: { width: 320, height: 110 }, aspectRatio: 1.777, disableFlip: false, formatsToSupport: [Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.EAN_8, Html5QrcodeSupportedFormats.UPC_A, Html5QrcodeSupportedFormats.UPC_E, Html5QrcodeSupportedFormats.CODE_128, Html5QrcodeSupportedFormats.CODE_39, Html5QrcodeSupportedFormats.ITF] }, handleDecoded, () => {})
+        const scanConfig = { fps: 12, qrbox: { width: 320, height: 110 }, aspectRatio: 1.777, disableFlip: false, formatsToSupport: [Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.EAN_8, Html5QrcodeSupportedFormats.UPC_A, Html5QrcodeSupportedFormats.UPC_E, Html5QrcodeSupportedFormats.CODE_128, Html5QrcodeSupportedFormats.CODE_39, Html5QrcodeSupportedFormats.ITF] }
+        try { await scanner.start({ facingMode: { exact: 'environment' } }, scanConfig, handleDecoded, () => {}) } catch { await scanner.start({ facingMode: 'environment' }, scanConfig, handleDecoded, () => {}) }
+        const video = document.querySelector(`#${scannerId} video`)
+        if (video) { video.setAttribute('playsinline', 'true'); video.setAttribute('muted', 'true'); video.setAttribute('autoplay', 'true'); video.playsInline = true; video.muted = true; video.autoplay = true; if (video.readyState < 1) await new Promise(resolve => { video.addEventListener('loadedmetadata', resolve, { once: true }); window.setTimeout(resolve, 1000) }) }
         if (mounted) setMessage('Scanning continuously — 1s delay after each scan')
       } catch (error) {
-        if (mounted) setMessage(error?.message?.toLowerCase().includes('permission') ? 'Camera permission was denied. Enable it in browser settings.' : 'Camera could not start. Check camera access and HTTPS, then use manual entry.')
+        if (mounted) {
+          setCameraError(true)
+          setMessage(error?.message?.toLowerCase().includes('permission') ? 'Camera permission was denied. Allow camera access in browser settings.' : 'Camera could not start. Use manual barcode search instead.')
+        }
         scannerRef.current = null
       }
     }
@@ -386,6 +394,8 @@ function CameraScannerModal({ onCode, onClose }) {
       if (cooldownTimerRef.current) window.clearTimeout(cooldownTimerRef.current)
       const scanner = scannerRef.current
       scannerRef.current = null
+      const video = document.querySelector(`#${scannerId} video`)
+      if (video?.srcObject) { video.pause(); video.srcObject.getTracks().forEach(track => track.stop()); video.srcObject = null }
       if (scanner) {
         ;(async () => {
           try { await scanner.stop() } catch (error) { console.warn('Camera stop failed:', error) }
@@ -395,12 +405,12 @@ function CameraScannerModal({ onCode, onClose }) {
     }
   }, [])
 
-  return <div className="modal-backdrop" onClick={event => event.target === event.currentTarget && onCloseRef.current()}><section className="modal camera-modal"><div className="modal-head"><div><p className="eyebrow">CAMERA SCANNER</p><h3>Scan Barcode</h3></div><button className="close-btn" onClick={onClose}><Icon name="close"/></button></div><div className="camera-box is-scanning"><div id={scannerId} className="camera-reader"/><div className="scanner-frame" aria-hidden="true"><i/><i/><i/><i/></div>{scanConfirmed && <div className="scan-confirmation" aria-live="polite">✓</div>}</div><small className="muted">{message}</small></section></div>
+  return <div className="modal-backdrop" onClick={event => event.target === event.currentTarget && onCloseRef.current()}><section className="modal camera-modal"><div className="modal-head"><div><p className="eyebrow">CAMERA SCANNER</p><h3>Scan Barcode</h3></div><button className="close-btn" onClick={onClose}><Icon name="close"/></button></div><div className="camera-box is-scanning"><div id={scannerId} className="camera-reader"/><div className="scanner-frame" aria-hidden="true"><i/><i/><i/><i/></div><div className="scanner-line" aria-hidden="true"/>{scanConfirmed && <div className="scan-confirmation" aria-live="polite">✓</div>}</div><small className="muted">{message}</small>{cameraError && <button className="secondary-btn camera-fallback-btn" onClick={onManualFallback}>Use Manual Barcode Search</button>}</section></div>
 }
 
 function Scanner({ onCode }) {
   const [open, setOpen] = useState(false)
-  return <section className="scanner panel"><div className="panel-heading"><div><h3>Barcode scanner</h3><p className="muted">Use your device camera as a fallback</p></div><button className="secondary-btn" onClick={() => setOpen(true)}><Icon name="camera" size={16}/> Open camera</button></div>{open && <CameraScannerModal onCode={onCode} onClose={() => setOpen(false)}/>}<div className="camera-placeholder compact-placeholder"><Icon name="camera" size={26}/><span>USB/Bluetooth scanner and manual entry are also supported.</span></div></section>
+  return <section className="scanner panel"><div className="panel-heading"><div><h3>Barcode scanner</h3><p className="muted">Use your device camera as a fallback</p></div><button className="secondary-btn" onClick={() => setOpen(true)}><Icon name="camera" size={16}/> Open camera</button></div>{open && <CameraScannerModal onCode={onCode} onClose={() => setOpen(false)} onManualFallback={() => setOpen(false)}/>}<div className="camera-placeholder compact-placeholder"><Icon name="camera" size={26}/><span>USB/Bluetooth scanner and manual entry are also supported.</span></div></section>
 }
 
 function Cart({ cart, setCart, onCheckout, canDeleteCartItems }) {
