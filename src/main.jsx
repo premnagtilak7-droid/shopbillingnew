@@ -17,6 +17,15 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
 const supabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey)
 const supabase = supabaseConfigured ? createClient(supabaseUrl, supabaseAnonKey) : null
+const AUTH_REQUEST_TIMEOUT_MS = 15000
+
+function withAuthTimeout(request) {
+  let timeoutId
+  const timeout = new Promise((_, reject) => {
+    timeoutId = window.setTimeout(() => reject(new Error('Unable to reach the authentication server. Check your Supabase project and Vercel environment variables, then try again.')), AUTH_REQUEST_TIMEOUT_MS)
+  })
+  return Promise.race([request, timeout]).finally(() => window.clearTimeout(timeoutId))
+}
 
 async function getProfile(userId) {
   if (!supabase || !userId) return null
@@ -370,7 +379,7 @@ function Auth({ onAuth, initialMode = 'login' }) {
     try {
       if (mode === 'forgot') {
         if (!supabase) throw new Error('Password reset is unavailable in preview mode until Supabase is configured.')
-        const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}/reset-password` })
+        const { error: resetError } = await withAuthTimeout(supabase.auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}/reset-password` }))
         if (resetError) throw resetError
         setError('If an account exists for this email, a password reset link has been sent. Check your inbox.')
         return
@@ -378,10 +387,10 @@ function Auth({ onAuth, initialMode = 'login' }) {
       if (supabase) {
         let result
         if (mode === 'login') {
-          result = await supabase.auth.signInWithPassword({ email, password })
+          result = await withAuthTimeout(supabase.auth.signInWithPassword({ email, password }))
         } else {
-          result = await supabase.auth.signUp({ email, password, options: { data: { full_name: fullName || email.split('@')[0], role } } })
-          if (result.error && /already registered|user already exists/i.test(result.error.message)) result = await supabase.auth.signInWithPassword({ email, password })
+          result = await withAuthTimeout(supabase.auth.signUp({ email, password, options: { data: { full_name: fullName || email.split('@')[0], role } } }))
+          if (result.error && /already registered|user already exists/i.test(result.error.message)) result = await withAuthTimeout(supabase.auth.signInWithPassword({ email, password }))
         }
         if (result.error) throw result.error
         if (mode === 'signup' && !result.data.session) {
