@@ -758,7 +758,48 @@ function CustomerDirectory({ invoices }) {
 
 function SimplePage({ title, text, icon = 'users' }) { return <section className="panel empty-friendly"><div className="big-soft-icon peach"><Icon name={icon} size={30}/></div><h3>{title}</h3><p className="muted">{text}</p></section> }
 
-function App() { const [user, setUser] = useState(() => supabase ? null : getDemoUser()); const [darkMode, setDarkMode] = useState(() => localStorage.getItem('billflow-theme') === 'dark'); const [catalog, setCatalog] = useState(() => supabase ? [] : products); const [invoices, setInvoices] = useState(() => { if (supabase) return []; try { return JSON.parse(localStorage.getItem('billflow-invoices')) || seedInvoices } catch { return seedInvoices } }); const [staff, setStaff] = useState([]); const [branding, setBranding] = useState(defaultBranding); useEffect(() => { localStorage.setItem('billflow-invoices', JSON.stringify(invoices)) }, [invoices]); useEffect(() => { localStorage.setItem('billflow-theme', darkMode ? 'dark' : 'light'); document.body.dataset.theme = darkMode ? 'dark' : 'light' }, [darkMode]); useEffect(() => { let mounted = true; if (supabase) { supabase.auth.getSession().then(async ({ data }) => { if (!mounted || !data.session?.user) return; const profile = await getProfile(data.session.user.id); if (mounted) setUser(mapAuthUser(data.session.user, profile)) }); const { data: listener } = supabase.auth.onAuthStateChange(async (_event, session) => { if (!session?.user) return setUser(null); const profile = await getProfile(session.user.id); if (mounted) setUser(mapAuthUser(session.user, profile)) }); return () => { mounted = false; listener.subscription.unsubscribe() } } return () => { mounted = false } }, []); useEffect(() => { if (!supabase || !user?.id) return; loadProducts(user.workspace_id).then(setCatalog); loadInvoices(user.workspace_id).then(setInvoices); loadWorkspaceBranding(user.workspace_id).then(setBranding); if (supabase) supabase.from('profiles').update({ last_active_at: new Date().toISOString() }).eq('id', user.id).eq('workspace_id', user.workspace_id).then(({ error }) => { if (error) console.warn('Last active update failed:', error.message) }); if (user.role === 'Owner') loadStaff(user.workspace_id).then(setStaff) }, [user?.id, user?.workspace_id, user?.role]); const updateCatalogStocks = updates => setCatalog(current => current.map(item => {
+function StartupScreen() {
+  return <main className="startup-shell" role="status" aria-live="polite"><section className="startup-card"><div className="brand-mark">B</div><p className="eyebrow">BILLFLOW</p><h1>Opening your workspace</h1><p className="muted">Checking your secure session. This should only take a moment.</p><div className="startup-spinner" aria-hidden="true"/></section></main>
+}
+
+function App() { const [user, setUser] = useState(() => supabase ? null : getDemoUser()); const [authReady, setAuthReady] = useState(!supabase); const [darkMode, setDarkMode] = useState(() => localStorage.getItem('billflow-theme') === 'dark'); const [catalog, setCatalog] = useState(() => supabase ? [] : products); const [invoices, setInvoices] = useState(() => { if (supabase) return []; try { return JSON.parse(localStorage.getItem('billflow-invoices')) || seedInvoices } catch { return seedInvoices } }); const [staff, setStaff] = useState([]); const [branding, setBranding] = useState(defaultBranding); useEffect(() => { localStorage.setItem('billflow-invoices', JSON.stringify(invoices)) }, [invoices]); useEffect(() => { localStorage.setItem('billflow-theme', darkMode ? 'dark' : 'light'); document.body.dataset.theme = darkMode ? 'dark' : 'light' }, [darkMode]); useEffect(() => {
+    let mounted = true
+    let readyTimer
+    const finishBoot = () => {
+      if (mounted) setAuthReady(true)
+    }
+    const applySession = session => {
+      if (!mounted) return
+      if (!session?.user) {
+        setUser(null)
+        finishBoot()
+        return
+      }
+      // Render immediately from the Auth session. Profile enrichment must not
+      // block the application when a database/RLS request is slow or offline.
+      setUser(mapAuthUser(session.user, null, session.user.user_metadata?.role || 'Employee'))
+      finishBoot()
+      getProfile(session.user.id).then(profile => {
+        if (mounted && profile) setUser(mapAuthUser(session.user, profile))
+      }).catch(error => console.warn('Profile enrichment failed:', error))
+    }
+
+    if (!supabase) return () => { mounted = false }
+
+    // A broken or unreachable Supabase request must never leave the whole app
+    // on an indefinite startup screen.
+    readyTimer = window.setTimeout(finishBoot, 8000)
+    supabase.auth.getSession().then(({ data }) => applySession(data?.session)).catch(error => {
+      console.warn('Session restore failed:', error)
+      finishBoot()
+    })
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => applySession(session))
+    return () => {
+      mounted = false
+      window.clearTimeout(readyTimer)
+      listener.subscription.unsubscribe()
+    }
+  }, []); useEffect(() => { if (!supabase || !user?.id) return; loadProducts(user.workspace_id).then(setCatalog); loadInvoices(user.workspace_id).then(setInvoices); loadWorkspaceBranding(user.workspace_id).then(setBranding); if (supabase) supabase.from('profiles').update({ last_active_at: new Date().toISOString() }).eq('id', user.id).eq('workspace_id', user.workspace_id).then(({ error }) => { if (error) console.warn('Last active update failed:', error.message) }); if (user.role === 'Owner') loadStaff(user.workspace_id).then(setStaff) }, [user?.id, user?.workspace_id, user?.role]); const updateCatalogStocks = updates => setCatalog(current => current.map(item => {
     const update = updates.find(candidate => (candidate.id && candidate.id === item.id) || candidate.sku === item.sku)
     return update ? { ...item, stock: update.stock } : item
   }))
@@ -885,6 +926,7 @@ function App() { const [user, setUser] = useState(() => supabase ? null : getDem
     toast.success('Invoice Generated — Stock Updated')
     return true
   }
+  if (!authReady) return <StartupScreen />
   return <BrowserRouter>{user ? <Layout user={user} darkMode={darkMode} onToggleTheme={() => setDarkMode(value => !value)} onLogout={async () => { await supabase?.auth.signOut(); localStorage.removeItem('billflow-user'); setUser(null) }}><Routes><Route path="/" element={<Protected user={user} roles={['Owner']}><Overview invoices={invoices} catalog={catalog}/></Protected>}/><Route path="/pos" element={<Protected user={user} roles={['Owner', 'Employee']}><ErrorBoundary><POS onInvoice={createInvoice} catalog={catalog} user={user} permissions={user.permissions || profilePermissions(user)} branding={branding}/></ErrorBoundary></Protected>}/><Route path="/invoices" element={<Invoices invoices={invoices}/>}/><Route path="/invoice/:id" element={<InvoiceDetail invoices={invoices} branding={branding}/>}/><Route path="/receipt/:id" element={<InvoiceDetail invoices={invoices} branding={branding}/>}/><Route path="/inventory" element={<Protected user={user} roles={['Owner', 'Employee']}>{user.role === 'Owner' || user.permissions?.can_edit_inventory ? <Inventory catalog={catalog} onCreate={createProduct} onUpdate={updateProduct} onDelete={deleteProduct} onAdjustStock={adjustStock}/> : <SimplePage title="Inventory access restricted" text="Your owner can grant inventory editing permission from Settings." icon="barcode"/>}</Protected>}/><Route path="/customers" element={<Protected user={user} roles={['Owner', 'Employee']}><CustomerDirectory invoices={invoices}/></Protected>}/><Route path="/reports" element={<Protected user={user} roles={['Owner']}><Reports invoices={invoices}/></Protected>}/><Route path="/settings" element={<Protected user={user} roles={['Owner']}><Settings branding={branding} onSaveBranding={saveBranding} staff={staff} onCreateStaff={createStaff} onUpdateStaff={updateStaff} onDeactivate={deactivateStaff}/></Protected>}/><Route path="*" element={<Navigate to="/invoices" replace/>}/></Routes></Layout> : <Routes><Route path="/" element={<Landing/>}/><Route path="/login" element={<Auth initialMode="login" onAuth={nextUser => { localStorage.setItem('billflow-user', JSON.stringify(nextUser)); setUser(nextUser) }}/>}/><Route path="/signup" element={<Auth initialMode="signup" onAuth={nextUser => { localStorage.setItem('billflow-user', JSON.stringify(nextUser)); setUser(nextUser) }}/>}/><Route path="/invoice/:id" element={<InvoiceDetail invoices={invoices} branding={branding}/>}/><Route path="/receipt/:id" element={<InvoiceDetail invoices={invoices} branding={branding}/>}/><Route path="*" element={<Navigate to="/" replace/>}/></Routes>}<Toaster position="bottom-right"/></BrowserRouter> }
 
 createRoot(document.getElementById('root')).render(<ErrorBoundary><App /></ErrorBoundary>)
