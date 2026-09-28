@@ -204,7 +204,8 @@ async function saveCustomerRecord(form, editingId, workspaceId) {
     { full_name: form.full_name, phone: form.phone, email: form.email || '', ...enrichment, ...(workspaceId ? { workspace_id: workspaceId } : {}) },
     { name: form.full_name, phone: form.phone, email: form.email || '', ...enrichment, ...(workspaceId ? { workspace_id: workspaceId } : {}) },
     { full_name: form.full_name, phone: form.phone, email: form.email || '', ...(workspaceId ? { workspace_id: workspaceId } : {}) },
-    { name: form.full_name, phone: form.phone, email: form.email || '' }
+    { name: form.full_name, phone: form.phone, email: form.email || '' },
+    { customer_name: form.full_name, phone: form.phone, email: form.email || '' }
   ]
   let lastResult = { data: null, error: null }
   for (const payload of candidates) {
@@ -220,7 +221,7 @@ async function saveCustomerRecord(form, editingId, workspaceId) {
 
 async function loadCustomerRecords(workspaceId) {
   if (!supabase) return []
-  const attempts = ['full_name', 'name']
+  const attempts = ['full_name', 'name', 'customer_name']
   for (const sortColumn of attempts) {
     let request = supabase.from('customers').select('*').order(sortColumn)
     if (workspaceId) request = request.eq('workspace_id', workspaceId)
@@ -237,7 +238,7 @@ async function loadCustomerRecords(workspaceId) {
 async function searchCustomerRecords(searchValue, workspaceId) {
   if (!supabase) return []
   const normalized = String(searchValue || '').trim()
-  for (const nameColumn of ['full_name', 'name']) {
+  for (const nameColumn of ['full_name', 'name', 'customer_name']) {
     let query = supabase.from('customers').select('*').or(`phone.ilike.%${normalized}%,${nameColumn}.ilike.%${normalized}%`).limit(8)
     if (workspaceId) query = query.eq('workspace_id', workspaceId)
     const { data, error } = await query
