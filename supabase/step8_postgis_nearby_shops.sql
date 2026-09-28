@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS public.workspace_settings (
   tax_id TEXT NOT NULL DEFAULT '',
   upi_id TEXT NOT NULL DEFAULT '',
   logo_url TEXT NOT NULL DEFAULT '',
+  categories TEXT NOT NULL DEFAULT 'Hardware',
   footer_note TEXT NOT NULL DEFAULT 'Thank you for shopping with us! No refunds without receipt.',
   marketplace_published BOOLEAN NOT NULL DEFAULT false,
   latitude NUMERIC,
@@ -25,6 +26,7 @@ CREATE TABLE IF NOT EXISTS public.workspace_settings (
 );
 
 ALTER TABLE public.workspace_settings
+  ADD COLUMN IF NOT EXISTS categories TEXT NOT NULL DEFAULT 'Hardware',
   ADD COLUMN IF NOT EXISTS marketplace_published BOOLEAN NOT NULL DEFAULT false,
   ADD COLUMN IF NOT EXISTS latitude NUMERIC,
   ADD COLUMN IF NOT EXISTS longitude NUMERIC,
@@ -111,6 +113,7 @@ RETURNS TABLE (
   contact_phone TEXT,
   contact_email TEXT,
   logo_url TEXT,
+  categories TEXT,
   marketplace_published BOOLEAN,
   latitude NUMERIC,
   longitude NUMERIC,
@@ -132,6 +135,7 @@ AS $$
     settings.contact_phone,
     settings.contact_email,
     settings.logo_url,
+    settings.categories,
     settings.marketplace_published,
     settings.latitude,
     settings.longitude,
