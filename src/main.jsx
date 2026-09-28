@@ -42,13 +42,14 @@ const profilePermissions = profile => ({
 })
 
 function mapAuthUser(authUser, profile, fallbackRole = 'Employee') {
+  const role = String(profile?.role || authUser?.user_metadata?.role || fallbackRole).replace(/^./, value => value.toUpperCase())
   return {
     id: authUser?.id,
     email: authUser?.email,
     name: profile?.full_name || authUser?.user_metadata?.full_name || authUser?.email?.split('@')[0] || 'User',
-    role: String(profile?.role || authUser?.user_metadata?.role || fallbackRole).replace(/^./, value => value.toUpperCase()),
+    role,
     workspace_id: profile?.workspace_id,
-    permissions: profilePermissions(profile),
+    permissions: profilePermissions({ ...profile, role }),
     is_active: profile?.is_active !== false,
     last_active_at: profile?.last_active_at || null
   }
@@ -637,6 +638,9 @@ function CustomerPicker({ onChange }) {
 }
 
 function POS({ onInvoice, catalog, user, permissions, branding }) {
+  const effectivePermissions = user?.role?.toLowerCase() === 'owner'
+    ? profilePermissions({ role: 'Owner' })
+    : { ...profilePermissions(user), ...(permissions || {}) }
   const [cart, setCart] = useState([])
   const [manual, setManual] = useState('')
   const [paymentOpen, setPaymentOpen] = useState(false)
@@ -701,8 +705,8 @@ function POS({ onInvoice, catalog, user, permissions, branding }) {
 
   return <>
     <section className="page-intro"><div><p className="muted">Quick Billing Counter <span className="live-dot">● Live</span></p><small className="muted">{user?.name} · USB/Bluetooth gun ready · scan a barcode ending with Enter</small></div><div className="low-stock-summary">{catalogLowStockCount} low-stock alerts</div></section>
-    <div className="pos-grid"><div><Scanner onCode={code}/><CustomerPicker onChange={setSelectedCustomer}/><div className="panel manual-entry"><label>Manual barcode / SKU entry<div className="inline-form"><input value={manual} onChange={event => setManual(event.target.value)} onKeyDown={event => event.key === 'Enter' && code(manual)} placeholder="8901234567890 or RICE-5KG" autoFocus/><button className="primary-btn" onClick={() => code(manual)}>Add item</button></div></label></div><ProductSearch onAdd={add} products={catalog}/></div><div><Cart cart={cart} setCart={setCart} canDeleteCartItems={permissions.can_delete_cart_items} onCheckout={checkout}/>{lowStockItems.length > 0 && <div className="low-stock-warning"><strong>Low-stock warning</strong><span>{lowStockItems.map(item => `${item.name} (${item.stock} left)`).join(' · ')}</span></div>}{receiptData && <button className="secondary-btn print-receipt-btn" onClick={printReceipt}>Print Bill</button>}</div></div>
-    {paymentOpen && <PaymentModal total={checkoutSummary?.total || 0} canApplyDiscounts={permissions.can_apply_discounts} branding={branding} onClose={() => setPaymentOpen(false)} onComplete={complete}/>} 
+    <div className="pos-grid"><div><Scanner onCode={code}/><CustomerPicker onChange={setSelectedCustomer}/><div className="panel manual-entry"><label>Manual barcode / SKU entry<div className="inline-form"><input value={manual} onChange={event => setManual(event.target.value)} onKeyDown={event => event.key === 'Enter' && code(manual)} placeholder="8901234567890 or RICE-5KG" autoFocus/><button className="primary-btn" onClick={() => code(manual)}>Add item</button></div></label></div><ProductSearch onAdd={add} products={catalog}/></div><div><Cart cart={cart} setCart={setCart} canDeleteCartItems={effectivePermissions.can_delete_cart_items} onCheckout={checkout}/>{lowStockItems.length > 0 && <div className="low-stock-warning"><strong>Low-stock warning</strong><span>{lowStockItems.map(item => `${item.name} (${item.stock} left)`).join(' · ')}</span></div>}{receiptData && <button className="secondary-btn print-receipt-btn" onClick={printReceipt}>Print Bill</button>}</div></div>
+    {paymentOpen && <PaymentModal total={checkoutSummary?.total || 0} canApplyDiscounts={effectivePermissions.can_apply_discounts} branding={branding} onClose={() => setPaymentOpen(false)} onComplete={complete}/>}
   </>
 }
 
@@ -774,7 +778,7 @@ function WebOrders({ user }) {
   </section>
 }
 
-function PaymentModal({ total, canApplyDiscounts, branding, onClose, onComplete }) { const [method, setMethod] = useState('UPI'); const [discount, setDiscount] = useState(''); const finalTotal = Math.max(0, Number(total) - (canApplyDiscounts ? Number(discount || 0) : 0)); const safeBranding = normalizeBranding(branding); const upiLink = safeBranding.upi_id ? `upi://pay?pa=${encodeURIComponent(safeBranding.upi_id)}&pn=${encodeURIComponent(safeBranding.store_name)}&am=${finalTotal.toFixed(2)}&cu=INR` : ''; return <div className="modal-backdrop"><section className="modal payment-modal"><div className="modal-head"><div><p className="eyebrow">SECURE CHECKOUT</p><h3>Collect {money(finalTotal)}</h3></div><button className="close-btn" onClick={onClose}><Icon name="close"/></button></div><label className="discount-field">Custom discount<input type="number" min="0" max={total} step="0.01" value={discount} disabled={!canApplyDiscounts} onChange={event => setDiscount(event.target.value)} placeholder={canApplyDiscounts ? '0.00' : 'Owner permission required'}/>{!canApplyDiscounts && <small className="muted">Your role cannot apply checkout discounts.</small>}</label><div className="payment-methods">{['UPI', 'Cash', 'Card'].map(item => <button key={item} className={method === item ? 'selected' : ''} onClick={() => setMethod(item)}>{item}</button>)}</div>{method === 'UPI' && <div className="upi-panel">{upiLink ? <QRCodeSVG value={upiLink} size={130}/>: <div className="qr-placeholder">QR</div>}<p>{safeBranding.upi_id ? `Pay ${safeBranding.store_name} via UPI` : 'Add a UPI ID in Settings to enable checkout QR'}</p>{upiLink && <a href={upiLink}>Open UPI payment · {safeBranding.upi_id}</a>}</div>}<button className="primary-btn full" onClick={() => onComplete({ payment: method, discount: canApplyDiscounts ? discount : 0 })}><Icon name="check" size={16}/> Mark {method} paid</button></section></div> }
+function PaymentModal({ total, canApplyDiscounts, branding, onClose, onComplete }) { const [method, setMethod] = useState('UPI'); const [discount, setDiscount] = useState(''); const finalTotal = Math.max(0, Number(total) - (canApplyDiscounts ? Number(discount || 0) : 0)); const safeBranding = normalizeBranding(branding); const upiLink = safeBranding.upi_id ? `upi://pay?pa=${encodeURIComponent(safeBranding.upi_id)}&pn=${encodeURIComponent(safeBranding.store_name)}&am=${finalTotal.toFixed(2)}&cu=INR` : ''; return <div className="modal-backdrop"><section className="modal payment-modal"><div className="modal-head"><div><p className="eyebrow">SECURE CHECKOUT</p><h3>Collect {money(finalTotal)}</h3></div><button className="close-btn" onClick={onClose}><Icon name="close"/></button></div><label className="discount-field">Custom discount<input type="number" min="0" max={total} step="0.01" value={discount} disabled={!canApplyDiscounts} onChange={event => setDiscount(event.target.value)} placeholder={canApplyDiscounts ? '0.00' : 'Owner permission required'}/>{!canApplyDiscounts && <small className="muted">Your role cannot apply checkout discounts.</small>}</label><div className="payment-methods">{['UPI', 'Cash', 'Card'].map(item => <button key={item} className={method === item ? 'selected' : ''} onClick={() => setMethod(item)}>{item}</button>)}</div>{method === 'UPI' && <div className="upi-panel">{upiLink ? <QRCodeSVG value={upiLink} size={130}/>: <div className="upi-not-configured"><Icon name="invoice" size={28}/><strong>UPI QR is not configured</strong><span>Add your store UPI ID in Settings to generate a real payment QR.</span><NavLink to="/settings" onClick={onClose}>Open Settings</NavLink></div>}<p>{safeBranding.upi_id ? `Pay ${safeBranding.store_name} via UPI` : 'Set up UPI to accept QR payments'}</p>{upiLink && <a href={upiLink}>Open UPI payment · {safeBranding.upi_id}</a>}</div>}<button className="primary-btn full" onClick={() => onComplete({ payment: method, discount: canApplyDiscounts ? discount : 0 })}><Icon name="check" size={16}/> Mark {method} paid</button></section></div> }
 function Inventory({ catalog, onCreate, onUpdate, onDelete, onAdjustStock }) {
   const [searchParams, setSearchParams] = useSearchParams()
   const showReorderOnly = searchParams.get('filter') === 'reorder'
