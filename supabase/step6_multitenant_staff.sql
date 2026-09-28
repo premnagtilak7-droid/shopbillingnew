@@ -103,3 +103,28 @@ DROP POLICY IF EXISTS "Workspace staff can create invoice items" ON public.invoi
 CREATE POLICY "Workspace staff can create invoice items"
 ON public.invoice_items FOR INSERT TO authenticated
 WITH CHECK (workspace_id = public.current_workspace_id());
+
+-- Customer CRM enrichment and edit permissions.
+ALTER TABLE public.customers
+  ADD COLUMN IF NOT EXISTS company_name TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS address TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS gstin TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS customer_type TEXT NOT NULL DEFAULT 'Retail',
+  ADD COLUMN IF NOT EXISTS credit_limit NUMERIC NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS notes TEXT NOT NULL DEFAULT '';
+
+DROP POLICY IF EXISTS "Workspace members can update customers" ON public.customers;
+CREATE POLICY "Workspace members can update customers"
+ON public.customers FOR UPDATE TO authenticated
+USING (workspace_id = public.current_workspace_id())
+WITH CHECK (workspace_id = public.current_workspace_id());
+
+DROP POLICY IF EXISTS "Workspace members can delete customers" ON public.customers;
+CREATE POLICY "Workspace members can delete customers"
+ON public.customers FOR DELETE TO authenticated
+USING (workspace_id = public.current_workspace_id());
+
+CREATE INDEX IF NOT EXISTS customers_workspace_name_idx
+  ON public.customers(workspace_id, full_name);
+CREATE INDEX IF NOT EXISTS customers_workspace_company_idx
+  ON public.customers(workspace_id, company_name);
