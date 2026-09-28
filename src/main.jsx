@@ -1000,7 +1000,61 @@ function buildChurnRisk(customers, invoices) {
   }).filter(customer => customer.lastVisitDays == null || customer.lastVisitDays >= 30).sort((left, right) => (right.lastVisitDays ?? 9999) - (left.lastVisitDays ?? 9999)).slice(0, 6)
 }
 
-function Overview({ invoices, catalog, user }) {
+function Overview({ invoices, catalog }) {
+  const [range, setRange] = useState('month')
+  const ranges = { today: 'Today', seven: 'Last 7 Days', month: 'This Month', ytd: 'Year to Date' }
+  const now = useMemo(() => new Date(), [])
+  const rangeStart = useMemo(() => {
+    const start = new Date(now)
+    if (range === 'today') start.setHours(0, 0, 0, 0)
+    if (range === 'seven') start.setDate(start.getDate() - 6)
+    if (range === 'month') start.setDate(1)
+    if (range === 'ytd') { start.setMonth(0, 1); start.setHours(0, 0, 0, 0) }
+    return start
+  }, [range, now])
+  const inRange = useCallback(invoice => {
+    const value = invoice.created_at || invoice.date
+    const date = new Date(value)
+    return !Number.isNaN(date.getTime()) && date >= rangeStart && date <= now
+  }, [rangeStart, now])
+  const filteredInvoices = useMemo(() => invoices.filter(inRange), [invoices, inRange])
+  const analytics = useMemo(() => calculateProfitAnalytics(filteredInvoices, catalog), [filteredInvoices, catalog])
+  const completedOrders = filteredInvoices.filter(invoice => /paid|completed|settled/i.test(invoice.status || '')).length
+  const averageOrderValue = completedOrders ? filteredInvoices.filter(invoice => /paid|completed|settled/i.test(invoice.status || '')).reduce((sum, invoice) => sum + Number(invoice.total || 0), 0) / completedOrders : 0
+  const salesByDay = useMemo(() => {
+    const map = new Map()
+    filteredInvoices.forEach(invoice => {
+      const date = new Date(invoice.created_at || invoice.date)
+      if (Number.isNaN(date.getTime())) return
+      const key = date.toISOString().slice(0, 10)
+      const current = map.get(key) || { date: key, label: date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }), revenue: 0 }
+      current.revenue += Number(invoice.total || invoice.subtotal || 0)
+      map.set(key, current)
+    })
+    return [...map.values()].sort((left, right) => left.date.localeCompare(right.date))
+  }, [filteredInvoices])
+  const paymentBreakdown = useMemo(() => {
+    const totals = { Cash: 0, UPI: 0, Card: 0, Online: 0 }
+    filteredInvoices.forEach(invoice => {
+      const payment = String(invoice.payment || '').toLowerCase()
+      const key = payment.includes('upi') ? 'UPI' : payment.includes('card') ? 'Card' : payment.includes('online') ? 'Online' : 'Cash'
+      totals[key] += Number(invoice.total || 0)
+    })
+    return Object.entries(totals).map(([name, value]) => ({ name, value })).filter(item => item.value > 0)
+  }, [filteredInvoices])
+  const lowStockItems = useMemo(() => catalog.filter(item => item.stock != null && Number(item.stock) <= Number(item.reorder_level ?? item.reorderLevel ?? 5)).sort((left, right) => Number(left.stock) - Number(right.stock)).slice(0, 5), [catalog])
+  const exportLowStock = () => { downloadCsv(`billflow-supplier-reorder-${new Date().toISOString().slice(0, 10)}.csv`, ['Product', 'SKU', 'Stock on hand', 'Reorder threshold', 'Suggested order'], lowStockItems.map(item => [item.name, item.sku || '', item.stock, item.reorder_level ?? 5, Math.max(Number(item.reorder_level ?? 5) * 2, 1)])); toast.success('Supplier reorder CSV exported') }
+  return <>
+    <section className="finance-page-head"><div><p className="eyebrow">FINANCIAL ANALYTICS</p><h2>Overview</h2><p className="muted">Track revenue, profitability, orders, and inventory health.</p></div><label className="date-range-picker">Date range<select value={range} onChange={event => setRange(event.target.value)}>{Object.entries(ranges).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></section>
+    <section className="stats-grid finance-kpis"><article className="stat-card"><div className="stat-icon blue"><Icon name="chart"/></div><div className="stat-copy"><span>Gross Revenue</span><strong>{money(filteredInvoices.reduce((sum, invoice) => sum + Number(invoice.total || 0), 0))}</strong><small>{ranges[range]}</small></div></article><article className="stat-card"><div className="stat-icon green"><Icon name="chart"/></div><div className="stat-copy"><span>Net Profit</span><strong>{money(analytics.profit)}</strong><small>Selling price less cost price</small></div></article><article className="stat-card"><div className="stat-icon purple"><Icon name="invoice"/></div><div className="stat-copy"><span>Total Completed Orders</span><strong>{completedOrders}</strong><small>Paid and completed</small></div></article><article className="stat-card"><div className="stat-icon peach"><Icon name="invoice"/></div><div className="stat-copy"><span>Average Order Value</span><strong>{money(averageOrderValue)}</strong><small>Completed orders</small></div></article></section>
+    <section className="finance-dashboard-grid"><article className="panel finance-chart-panel"><div className="panel-heading"><div><p className="eyebrow">REVENUE PERFORMANCE</p><h3>Sales by Day</h3><p className="muted">Gross revenue during {ranges[range].toLowerCase()}.</p></div></div>{salesByDay.length ? <ResponsiveContainer width="100%" height={300}><BarChart data={salesByDay}><CartesianGrid strokeDasharray="3 3" stroke="#ececf3"/><XAxis dataKey="label"/><YAxis tickFormatter={value => `₹${Math.round(value / 1000)}k`}/><Tooltip formatter={value => money(value)}/><Bar dataKey="revenue" name="Gross Revenue" fill="#7569e8" radius={[7, 7, 0, 0]}/></BarChart></ResponsiveContainer> : <EmptyState title="No sales in this range" text="Create completed orders to see the daily revenue chart." action="Open POS"/>}</article><aside className="finance-side-column"><article className="panel payment-breakdown-panel"><div className="panel-heading"><div><p className="eyebrow">PAYMENT MIX</p><h3>Payment Breakdown</h3></div></div>{paymentBreakdown.length ? <ResponsiveContainer width="100%" height={220}><PieChart><Pie data={paymentBreakdown} dataKey="value" nameKey="name" innerRadius={58} outerRadius={88} paddingAngle={3}>{paymentBreakdown.map((item, index) => <Cell key={item.name} fill={['#7569e8', '#25a876', '#f29b67', '#4d9de0'][index % 4]}/>)}</Pie><Tooltip formatter={value => money(value)}/><Legend/></PieChart></ResponsiveContainer> : <p className="muted">No payment data in this range.</p>}</article><article className="panel low-stock-widget"><div className="panel-heading"><div><p className="eyebrow">INVENTORY ALERT</p><h3>Low Stock Warning</h3></div><button className="text-btn" onClick={exportLowStock}>Export CSV</button></div>{lowStockItems.length ? <div className="low-stock-widget-list">{lowStockItems.map(item => <div key={item.id || item.sku}><span><strong>{item.name}</strong><small>{item.stock} left · threshold {item.reorder_level ?? 5}</small></span><b>{item.stock === 0 ? 'Out' : 'Low'}</b></div>)}</div> : <p className="muted">All tracked products are above reorder thresholds.</p>}</article></aside></section>
+    <section className="panel top-products-panel"><div className="panel-heading"><div><h3>Top Best-Selling Items</h3><p className="muted">Ranked by quantity sold in {ranges[range].toLowerCase()}.</p></div></div>{analytics.topProducts.length ? <div className="top-products-table"><div className="top-products-head"><span>Product</span><span>Qty sold</span><span>Revenue</span><span>Profit</span></div>{analytics.topProducts.map(item => <div className="top-product-row" key={item.name}><strong>{item.name}</strong><span>{item.quantity}</span><span>{money(item.revenue)}</span><b>{money(item.profit)}</b></div>)}</div> : <EmptyState title="No sales data yet" text="Create an invoice to see best-selling products and profit analytics." action="Open billing counter"/>}</section>
+  </>
+}
+
+// Kept as a visual reference for the previous dashboard layout.
+// eslint-disable-next-line no-unused-vars
+function OverviewLegacyCurrent({ invoices, catalog, user }) {
   const analytics = calculateProfitAnalytics(invoices, catalog)
   const [customers, setCustomers] = useState([])
   const [webOrders, setWebOrders] = useState([])

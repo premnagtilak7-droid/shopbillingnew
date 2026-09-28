@@ -26,6 +26,7 @@ BillFlow is a React + Vite POS and GST billing workspace for small shops, with S
 - Web Orders: owner/employee split-pane pickup queue with Supabase Realtime updates, packing lists, order status actions, and camera QR pickup completion.
 - Overview intelligence: walk-in vs online pickup channel chart, velocity-based AI restock suggestions with supplier PO drafts, and a 30-day customer churn-risk list.
 - Owner Marketing: WhatsApp broadcast links, promotion-code creation, and Supabase Storage-backed customer catalog banners.
+- Financial Overview: date-range filtered gross revenue, inventory-cost net profit, completed-order KPIs, sales-by-day bar chart, payment-method donut, and low-stock supplier CSV export.
 - PostGIS nearby-shop discovery: `supabase/step8_postgis_nearby_shops.sql` adds a geography point, 40 km `get_nearby_shops` RPC, marketplace RLS, and coordinate synchronization for workspace stores.
 
 ## Staff management and permissions
