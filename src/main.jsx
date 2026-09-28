@@ -273,6 +273,33 @@ async function loadInvoices(workspaceId, customerName = '') {
   return data.map(mapInvoiceRow)
 }
 
+const normalizeWebOrder = row => ({
+  ...row,
+  order_id: row?.order_id || row?.id || '—',
+  customer_name: row?.customer_name || 'Customer',
+  status: String(row?.status || 'pending').toLowerCase(),
+  pickup_window: row?.pickup_window || 'Pickup time not specified',
+  item_count: Number(row?.item_count || (row?.web_order_items || []).reduce((sum, item) => sum + Number(item.quantity || 0), 0)),
+  total: Number(row?.total || 0),
+  items: row?.web_order_items || row?.items || []
+})
+
+async function loadWebOrders(workspaceId) {
+  if (!supabase || !workspaceId) return []
+  const { data, error } = await supabase.from('web_orders').select('*, web_order_items(*)').eq('workspace_id', workspaceId).order('created_at', { ascending: false })
+  if (error) {
+    console.warn('Web order loading failed:', error.message)
+    return []
+  }
+  return (data || []).map(normalizeWebOrder)
+}
+
+function webOrderPickupToken(value) {
+  const raw = String(value || '').trim()
+  const match = raw.match(/(?:claim|order)[\\/:=]+([A-Za-z0-9_-]+)/i)
+  return match?.[1] || raw.split('/').filter(Boolean).pop() || raw
+}
+
 const products = [
   { sku: 'RICE-5KG', barcode: '8901234567890', name: 'Premium Rice 5kg', price: 460, tax: 5, stock: 24 },
   { sku: 'OIL-1L', barcode: '8901234567891', name: 'Sunflower Oil 1L', price: 165, tax: 5, stock: 7 },
@@ -487,11 +514,11 @@ function Auth({ onAuth, initialMode = 'login' }) {
   return <main className="auth-shell"><div className="auth-layout"><aside className="auth-showcase"><div className="auth-showcase-mark">B</div><p className="eyebrow">BILLFLOW WORKSPACE</p><h2>Make every sale feel simple.</h2><p>Billing, customers, inventory, and receipts in one calm workspace.</p><ul><li><span>✓</span> Fast checkout for busy counters</li><li><span>✓</span> Branded receipts customers trust</li><li><span>✓</span> Clear insights for owners</li></ul></aside><section className="auth-card"><div className="brand auth-brand"><div className="brand-mark">B</div><span>Bill<span>Flow</span></span></div><h1>{mode === 'login' ? 'Welcome back' : mode === 'forgot' ? 'Reset your password' : 'Create your workspace'}</h1><p className="muted">{mode === 'forgot' ? 'Enter your account email and we will send you a secure reset link.' : supabaseConfigured ? 'Securely sign in with Supabase Auth.' : 'Preview mode is active. Add Supabase keys for production authentication.'}</p>{!supabaseConfigured && <div className="notice">Supabase is not configured. Demo sessions are kept in this browser only.</div>}{mode !== 'forgot' && <div className="auth-tabs"><button type="button" className={mode === 'login' ? 'selected' : ''} onClick={() => { setMode('login'); setError('') }}>Login</button><button type="button" className={mode === 'signup' ? 'selected' : ''} onClick={() => { setMode('signup'); setError('') }}>Sign up</button></div>}<form onSubmit={submit}>{mode === 'signup' && <label>Full name<input value={fullName} onChange={event => setFullName(event.target.value)} placeholder="Your name" required /></label>}<label>Email address<input type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="you@shop.com" autoComplete="email" required /></label>{mode !== 'forgot' && <label>Password<div className="password-field"><input type={showPassword ? 'text' : 'password'} value={password} onChange={event => setPassword(event.target.value)} placeholder="At least 6 characters" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} required /><button type="button" onClick={() => setShowPassword(value => !value)} aria-label={showPassword ? 'Hide password' : 'Show password'}>{showPassword ? 'Hide' : 'Show'}</button></div></label>}{mode === 'signup' && <label>Workspace role<select value={role} onChange={event => setRole(event.target.value)}><option>Owner</option><option>Employee</option><option>Customer</option></select></label>}{error && <p className={mode === 'forgot' && error.startsWith('If an account') ? 'form-success' : 'form-error'}>{error}</p>}<button className="primary-btn full" disabled={busy}>{busy ? 'Working…' : mode === 'forgot' ? 'Send reset link' : mode === 'login' ? 'Login to BillFlow' : 'Create account'}</button></form>{mode === 'login' && <button type="button" className="auth-link" onClick={() => { setMode('forgot'); setError('') }}>Forgot password?</button>}{mode === 'forgot' && <button type="button" className="auth-link" onClick={() => { setMode('login'); setError('') }}>Back to login</button>}</section></div></main>
 }
 
-function Layout({ user, onLogout, onToggleTheme, darkMode, children }) { const [menuOpen, setMenuOpen] = useState(false); const [mobileNavOpen, setMobileNavOpen] = useState(false); const location = useLocation(); const title = location.pathname === '/' ? 'Overview' : location.pathname.slice(1).split('/')[0].replace(/\b\w/g, x => x.toUpperCase()); const links = [{ path: '/', label: 'Overview', icon: 'grid', roles: ['Owner'] }, { path: '/pos', label: 'POS billing', icon: 'invoice', roles: ['Owner', 'Employee'] }, { path: '/inventory', label: 'Inventory', icon: 'barcode', roles: ['Owner', 'Employee'] }, { path: '/invoices', label: 'Invoices', icon: 'invoice', roles: ['Owner', 'Employee', 'Customer'] }, { path: '/customers', label: user.role === 'Customer' ? 'Shop' : 'Customers', icon: user.role === 'Customer' ? 'grid' : 'users', roles: ['Owner', 'Employee', 'Customer'] }, { path: '/reports', label: 'Reports', icon: 'chart', roles: ['Owner'] }]; return <div className="app-shell"><aside className={mobileNavOpen ? 'sidebar mobile-open' : 'sidebar'}><div className="brand"><div className="brand-mark">B</div><span>Bill<span>Flow</span></span></div><div className="workspace-label">WORKSPACE</div><nav className="main-nav">{links.filter(link => link.roles.includes(user.role) && (link.path !== '/reports' || user.permissions?.can_view_reports !== false)).map(link => <NavLink end={link.path === '/'} key={link.path} to={link.path} onClick={() => setMobileNavOpen(false)} className={({ isActive }) => isActive ? 'nav-item active' : 'nav-item'}><Icon name={link.icon}/><span>{link.label}</span></NavLink>)}</nav><div className="workspace-label second">MANAGE</div>{user.role === 'Owner' && <NavLink to="/settings" className={({ isActive }) => isActive ? 'nav-item active' : 'nav-item'}><Icon name="settings"/><span>Settings</span></NavLink>}<div className="sidebar-bottom"><div className="user-mini"><div className="avatar purple">{initials(user.name)}</div><div><strong>{user.name}</strong><small>{user.role} account</small></div><button type="button" aria-label="Open account menu" aria-expanded={menuOpen} className="account-menu-trigger" onClick={() => setMenuOpen(value => !value)}><Icon name="more" size={18}/></button>{menuOpen && <div className="account-popover" role="menu"><button type="button" role="menuitem" onClick={() => setMenuOpen(false)}>View Profile</button>{user.role === 'Owner' && <NavLink role="menuitem" to="/settings" onClick={() => setMenuOpen(false)}>Workspace Settings</NavLink>}<button type="button" role="menuitem" className="danger" onClick={() => { setMenuOpen(false); onLogout() }}>Sign Out</button></div>}</div></div></aside>{mobileNavOpen && <button className="mobile-nav-scrim" aria-label="Close navigation" onClick={() => setMobileNavOpen(false)}/>}<section className="main-area"><header className="topbar"><button className="mobile-menu-btn" aria-label="Open navigation" aria-expanded={mobileNavOpen} onClick={() => setMobileNavOpen(true)}><Icon name="more" size={20}/></button><div><div className="breadcrumb">Workspace <span>/</span> {title}</div><h1>{title}</h1></div><div className="top-actions"><button className="theme-toggle" onClick={onToggleTheme} aria-label="Toggle theme">{darkMode ? 'Light' : 'Dark'} mode</button><span className="role-badge">{user.role}</span><div className="top-avatar">{initials(user.name)}</div></div></header><main className="content">{children}</main></section></div> }
+function Layout({ user, onLogout, onToggleTheme, darkMode, children }) { const [menuOpen, setMenuOpen] = useState(false); const [mobileNavOpen, setMobileNavOpen] = useState(false); const location = useLocation(); const title = location.pathname === '/' ? 'Overview' : location.pathname.slice(1).split('/')[0].replace(/\b\w/g, x => x.toUpperCase()); const links = [{ path: '/', label: 'Overview', icon: 'grid', roles: ['Owner'] }, { path: '/pos', label: 'POS billing', icon: 'invoice', roles: ['Owner', 'Employee'] }, { path: '/web-orders', label: 'Web Orders', icon: 'camera', roles: ['Owner', 'Employee'] }, { path: '/inventory', label: 'Inventory', icon: 'barcode', roles: ['Owner', 'Employee'] }, { path: '/invoices', label: 'Invoices', icon: 'invoice', roles: ['Owner', 'Employee', 'Customer'] }, { path: '/customers', label: user.role === 'Customer' ? 'Shop' : 'Customers', icon: user.role === 'Customer' ? 'grid' : 'users', roles: ['Owner', 'Employee', 'Customer'] }, { path: '/reports', label: 'Reports', icon: 'chart', roles: ['Owner'] }]; return <div className="app-shell"><aside className={mobileNavOpen ? 'sidebar mobile-open' : 'sidebar'}><div className="brand"><div className="brand-mark">B</div><span>Bill<span>Flow</span></span></div><div className="workspace-label">WORKSPACE</div><nav className="main-nav">{links.filter(link => link.roles.includes(user.role) && (link.path !== '/reports' || user.permissions?.can_view_reports !== false)).map(link => <NavLink end={link.path === '/'} key={link.path} to={link.path} onClick={() => setMobileNavOpen(false)} className={({ isActive }) => isActive ? 'nav-item active' : 'nav-item'}><Icon name={link.icon}/><span>{link.label}</span></NavLink>)}</nav><div className="workspace-label second">MANAGE</div>{user.role === 'Owner' && <NavLink to="/settings" className={({ isActive }) => isActive ? 'nav-item active' : 'nav-item'}><Icon name="settings"/><span>Settings</span></NavLink>}<div className="sidebar-bottom"><div className="user-mini"><div className="avatar purple">{initials(user.name)}</div><div><strong>{user.name}</strong><small>{user.role} account</small></div><button type="button" aria-label="Open account menu" aria-expanded={menuOpen} className="account-menu-trigger" onClick={() => setMenuOpen(value => !value)}><Icon name="more" size={18}/></button>{menuOpen && <div className="account-popover" role="menu"><button type="button" role="menuitem" onClick={() => setMenuOpen(false)}>View Profile</button>{user.role === 'Owner' && <NavLink role="menuitem" to="/settings" onClick={() => setMenuOpen(false)}>Workspace Settings</NavLink>}<button type="button" role="menuitem" className="danger" onClick={() => { setMenuOpen(false); onLogout() }}>Sign Out</button></div>}</div></div></aside>{mobileNavOpen && <button className="mobile-nav-scrim" aria-label="Close navigation" onClick={() => setMobileNavOpen(false)}/>}<section className="main-area"><header className="topbar"><button className="mobile-menu-btn" aria-label="Open navigation" aria-expanded={mobileNavOpen} onClick={() => setMobileNavOpen(true)}><Icon name="more" size={20}/></button><div><div className="breadcrumb">Workspace <span>/</span> {title}</div><h1>{title}</h1></div><div className="top-actions"><button className="theme-toggle" onClick={onToggleTheme} aria-label="Toggle theme">{darkMode ? 'Light' : 'Dark'} mode</button><span className="role-badge">{user.role}</span><div className="top-avatar">{initials(user.name)}</div></div></header><main className="content">{children}</main></section></div> }
 
 function Protected({ user, roles, children }) { return roles.includes(user.role) ? children : <Navigate to="/invoices" replace /> }
 const ProductSearch = memo(function ProductSearch({ onAdd, products: catalog }) { const [query, setQuery] = useState(''); const [debouncedQuery, setDebouncedQuery] = useState(''); useEffect(() => { const timer = window.setTimeout(() => setDebouncedQuery(query), 300); return () => window.clearTimeout(timer) }, [query]); const matches = useMemo(() => { const normalized = debouncedQuery.toLowerCase(); return catalog.filter(item => `${item.name} ${item.sku} ${item.barcode}`.toLowerCase().includes(normalized)).slice(0, 50) }, [catalog, debouncedQuery]); return <section className="panel product-search"><div className="search-box"><Icon name="search" size={17}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search product, SKU or barcode…" /></div><div className="product-results">{matches.map(item => <button key={item.id || item.sku} onClick={() => onAdd(item)}><span><strong>{item.name}</strong><small>{item.sku} · {item.barcode}</small></span><b>{money(item.price)}</b></button>)}</div></section> })
-function CameraScannerModal({ onCode, onClose, onManualFallback = onClose }) {
+function CameraScannerModal({ onCode, onClose, onManualFallback = onClose, scannerTitle = 'Scan Barcode', scanLabel = 'Barcode captured ✓' }) {
   const scannerRef = useRef(null)
   const scanLockRef = useRef(false)
   const cooldownTimerRef = useRef(null)
@@ -521,7 +548,7 @@ function CameraScannerModal({ onCode, onClose, onManualFallback = onClose }) {
           if (!mounted || scanLockRef.current) return
           scanLockRef.current = true
           setScanConfirmed(true)
-          setMessage('Barcode captured ✓')
+          setMessage(scanLabel)
           try { playBarcodeBeep() } catch (error) { console.warn('Barcode beep unavailable:', error) }
           cooldownTimerRef.current = window.setTimeout(() => {
             if (!mounted) return
@@ -535,7 +562,7 @@ function CameraScannerModal({ onCode, onClose, onManualFallback = onClose }) {
             if (mounted) setScanConfirmed(false)
           }, 750)
         }
-        const scanConfig = { fps: 12, qrbox: { width: 320, height: 110 }, aspectRatio: 1.777, disableFlip: false, formatsToSupport: [Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.EAN_8, Html5QrcodeSupportedFormats.UPC_A, Html5QrcodeSupportedFormats.UPC_E, Html5QrcodeSupportedFormats.CODE_128, Html5QrcodeSupportedFormats.CODE_39, Html5QrcodeSupportedFormats.ITF] }
+        const scanConfig = { fps: 12, qrbox: { width: 320, height: 110 }, aspectRatio: 1.777, disableFlip: false, formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE, Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.EAN_8, Html5QrcodeSupportedFormats.UPC_A, Html5QrcodeSupportedFormats.UPC_E, Html5QrcodeSupportedFormats.CODE_128, Html5QrcodeSupportedFormats.CODE_39, Html5QrcodeSupportedFormats.ITF] }
         try { await scanner.start({ facingMode: { exact: 'environment' } }, scanConfig, handleDecoded, () => {}) } catch { await scanner.start({ facingMode: 'environment' }, scanConfig, handleDecoded, () => {}) }
         const video = document.querySelector(`#${scannerId} video`)
         if (video) { video.setAttribute('playsinline', 'true'); video.setAttribute('muted', 'true'); video.setAttribute('autoplay', 'true'); video.playsInline = true; video.muted = true; video.autoplay = true; if (video.readyState < 1) await new Promise(resolve => { video.addEventListener('loadedmetadata', resolve, { once: true }); window.setTimeout(resolve, 1000) }) }
@@ -564,9 +591,9 @@ function CameraScannerModal({ onCode, onClose, onManualFallback = onClose }) {
         })()
       }
     }
-  }, [])
+  }, [scanLabel])
 
-  return <div className="modal-backdrop" onClick={event => event.target === event.currentTarget && onCloseRef.current()}><section className="modal camera-modal"><div className="modal-head"><div><p className="eyebrow">CAMERA SCANNER</p><h3>Scan Barcode</h3></div><button className="close-btn" onClick={onClose}><Icon name="close"/></button></div><div className="camera-box is-scanning"><div id={scannerId} className="camera-reader"/><div className="scanner-frame" aria-hidden="true"><i/><i/><i/><i/></div><div className="scanner-line" aria-hidden="true"/>{scanConfirmed && <div className="scan-confirmation" aria-live="polite">✓</div>}</div><small className="muted">{message}</small>{cameraError && <button className="secondary-btn camera-fallback-btn" onClick={onManualFallback}>Use Manual Barcode Search</button>}</section></div>
+  return <div className="modal-backdrop" onClick={event => event.target === event.currentTarget && onCloseRef.current()}><section className="modal camera-modal"><div className="modal-head"><div><p className="eyebrow">CAMERA SCANNER</p><h3>{scannerTitle}</h3></div><button className="close-btn" onClick={onClose}><Icon name="close"/></button></div><div className="camera-box is-scanning"><div id={scannerId} className="camera-reader"/><div className="scanner-frame" aria-hidden="true"><i/><i/><i/><i/></div><div className="scanner-line" aria-hidden="true"/>{scanConfirmed && <div className="scan-confirmation" aria-live="polite">✓</div>}</div><small className="muted">{message}</small>{cameraError && <button className="secondary-btn camera-fallback-btn" onClick={onManualFallback}>Use Manual Barcode Search</button>}</section></div>
 }
 
 function Scanner({ onCode }) {
@@ -677,6 +704,74 @@ function POS({ onInvoice, catalog, user, permissions, branding }) {
     <div className="pos-grid"><div><Scanner onCode={code}/><CustomerPicker onChange={setSelectedCustomer}/><div className="panel manual-entry"><label>Manual barcode / SKU entry<div className="inline-form"><input value={manual} onChange={event => setManual(event.target.value)} onKeyDown={event => event.key === 'Enter' && code(manual)} placeholder="8901234567890 or RICE-5KG" autoFocus/><button className="primary-btn" onClick={() => code(manual)}>Add item</button></div></label></div><ProductSearch onAdd={add} products={catalog}/></div><div><Cart cart={cart} setCart={setCart} canDeleteCartItems={permissions.can_delete_cart_items} onCheckout={checkout}/>{lowStockItems.length > 0 && <div className="low-stock-warning"><strong>Low-stock warning</strong><span>{lowStockItems.map(item => `${item.name} (${item.stock} left)`).join(' · ')}</span></div>}{receiptData && <button className="secondary-btn print-receipt-btn" onClick={printReceipt}>Print Bill</button>}</div></div>
     {paymentOpen && <PaymentModal total={checkoutSummary?.total || 0} canApplyDiscounts={permissions.can_apply_discounts} branding={branding} onClose={() => setPaymentOpen(false)} onComplete={complete}/>} 
   </>
+}
+
+function WebOrders({ user }) {
+  const [orders, setOrders] = useState([])
+  const [selectedId, setSelectedId] = useState(null)
+  const [cameraOpen, setCameraOpen] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [busyId, setBusyId] = useState(null)
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    const next = await loadWebOrders(user?.workspace_id)
+    setOrders(next)
+    setSelectedId(current => current && next.some(order => order.id === current) ? current : next[0]?.id || null)
+    setLoading(false)
+  }, [user?.workspace_id])
+
+  useEffect(() => {
+    const refreshTimer = window.setTimeout(() => refresh(), 0)
+    if (!supabase || !user?.workspace_id) return () => window.clearTimeout(refreshTimer)
+    const channel = supabase.channel(`workspace-web-orders-${user.workspace_id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'web_orders', filter: `workspace_id=eq.${user.workspace_id}` }, () => refresh())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'web_order_items', filter: `workspace_id=eq.${user.workspace_id}` }, () => refresh())
+      .subscribe((status, error) => {
+        if (error) console.warn('Web order realtime subscription failed:', error.message)
+        if (status === 'SUBSCRIBED') toast.success('Web orders live feed connected', { id: 'web-orders-live' })
+      })
+    return () => { window.clearTimeout(refreshTimer); supabase.removeChannel(channel) }
+  }, [refresh, user?.workspace_id])
+
+  const selectedOrder = orders.find(order => order.id === selectedId) || orders[0] || null
+  const updateStatus = async (order, status) => {
+    if (!order || busyId) return
+    setBusyId(order.id)
+    if (!supabase) {
+      setOrders(current => current.map(item => item.id === order.id ? { ...item, status } : item))
+      setBusyId(null)
+      return
+    }
+    const updates = { status, updated_at: new Date().toISOString() }
+    if (status === 'completed') updates.claimed_at = new Date().toISOString(), updates.claimed_by = user.id
+    const { data, error } = await supabase.from('web_orders').update(updates).eq('id', order.id).eq('workspace_id', user.workspace_id).select('*, web_order_items(*)').single()
+    if (error) toast.error(`Could not update order: ${error.message}`)
+    else setOrders(current => current.map(item => item.id === order.id ? normalizeWebOrder(data) : item))
+    setBusyId(null)
+  }
+
+  const scanPickupQr = async decoded => {
+    const token = webOrderPickupToken(decoded)
+    const match = orders.find(order => order.order_id === token || order.qr_token === token || order.id === token)
+    if (!match) { toast.error(`No open pickup order matches ${token}`); return false }
+    if (match.status === 'completed') { toast.success(`${match.order_id} is already completed`); setCameraOpen(false); return true }
+    await updateStatus(match, 'completed')
+    setSelectedId(match.id)
+    setCameraOpen(false)
+    toast.success(`${match.order_id} completed — customer pickup confirmed`)
+    return true
+  }
+
+  const statusLabel = status => ({ pending: 'New', accepted: 'Accepted', ready: 'Ready for pickup', completed: 'Completed', cancelled: 'Cancelled' }[status] || status)
+  return <section className="web-orders-page">
+    <section className="page-intro"><div><p className="eyebrow">CUSTOMER PICKUP QUEUE</p><h2>Web Orders</h2><p className="muted">Accept online orders, pack them, and confirm pickup at the counter.</p></div><div className="web-orders-actions"><span className="live-dot">● Live feed</span><button className="primary-btn" onClick={() => setCameraOpen(true)}><Icon name="camera" size={16}/> Scan Customer Pickup QR</button></div></section>
+    <section className="web-orders-split panel">
+      <div className="web-orders-list"><div className="web-orders-list-head"><div><h3>Incoming pickup orders</h3><p className="muted">{orders.length} order{orders.length === 1 ? '' : 's'} in this workspace</p></div><button className="text-btn" onClick={refresh}>Refresh</button></div>{loading ? <div className="empty-friendly compact"><p>Loading web orders…</p></div> : orders.length === 0 ? <div className="empty-friendly compact"><div className="big-soft-icon peach"><Icon name="invoice" size={26}/></div><h3>No web orders yet</h3><p className="muted">New customer pickup orders will appear here automatically.</p></div> : <div className="web-order-cards">{orders.map(order => <button type="button" className={`web-order-card ${selectedOrder?.id === order.id ? 'selected' : ''}`} key={order.id} onClick={() => setSelectedId(order.id)}><div className="web-order-card-top"><strong>{order.order_id}</strong>{order.status === 'pending' && <span className="new-order-badge">NEW</span>}</div><span>{order.customer_name}</span><small>{order.item_count} item{order.item_count === 1 ? '' : 's'} · Pickup {order.pickup_window}</small><div className="web-order-card-foot"><span className={`web-order-status ${order.status}`}>{statusLabel(order.status)}</span><time>{order.created_at ? new Date(order.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</time></div></button>)}</div>}</div>
+      <div className="web-order-detail">{selectedOrder ? <><div className="web-order-detail-head"><div><p className="eyebrow">ORDER DETAILS</p><h3>{selectedOrder.order_id}</h3><p className="muted">{selectedOrder.customer_name} · Pickup {selectedOrder.pickup_window}</p></div><span className={`web-order-status ${selectedOrder.status}`}>{statusLabel(selectedOrder.status)}</span></div><div className="packing-list"><div className="packing-list-head"><strong>Packing list</strong><span>{selectedOrder.item_count} items</span></div>{selectedOrder.items.length ? selectedOrder.items.map((item, index) => <div className="packing-item" key={item.id || `${item.product_name}-${index}`}><span><strong>{item.product_name || item.name || 'Product'}</strong><small>{item.quantity} × {money(item.unit_price || item.price || 0)}</small></span><b>{money(Number(item.quantity || 0) * Number(item.unit_price || item.price || 0))}</b></div>) : <p className="muted">Packing details are not available for this order.</p>}<div className="packing-total"><span>Total</span><strong>{money(selectedOrder.total)}</strong></div></div><div className="web-order-status-actions"><button className="secondary-btn" disabled={selectedOrder.status !== 'pending' || busyId === selectedOrder.id} onClick={() => updateStatus(selectedOrder, 'accepted')}>Accept Order</button><button className="primary-btn" disabled={!['accepted', 'pending'].includes(selectedOrder.status) || busyId === selectedOrder.id} onClick={() => updateStatus(selectedOrder, 'ready')}>Mark as Packed / Ready for Pickup</button><button className="success-btn" disabled={selectedOrder.status !== 'ready' || busyId === selectedOrder.id} onClick={() => updateStatus(selectedOrder, 'completed')}>Completed</button></div></> : <div className="empty-friendly"><Icon name="invoice" size={30}/><h3>Select an order</h3><p className="muted">Choose an incoming order to see its packing list.</p></div>}</div>
+    </section>
+    {cameraOpen && <CameraScannerModal scannerTitle="Scan Customer Pickup QR" scanLabel="QR code captured ✓" onCode={scanPickupQr} onClose={() => setCameraOpen(false)} onManualFallback={() => setCameraOpen(false)} />}
+  </section>
 }
 
 function PaymentModal({ total, canApplyDiscounts, branding, onClose, onComplete }) { const [method, setMethod] = useState('UPI'); const [discount, setDiscount] = useState(''); const finalTotal = Math.max(0, Number(total) - (canApplyDiscounts ? Number(discount || 0) : 0)); const safeBranding = normalizeBranding(branding); const upiLink = safeBranding.upi_id ? `upi://pay?pa=${encodeURIComponent(safeBranding.upi_id)}&pn=${encodeURIComponent(safeBranding.store_name)}&am=${finalTotal.toFixed(2)}&cu=INR` : ''; return <div className="modal-backdrop"><section className="modal payment-modal"><div className="modal-head"><div><p className="eyebrow">SECURE CHECKOUT</p><h3>Collect {money(finalTotal)}</h3></div><button className="close-btn" onClick={onClose}><Icon name="close"/></button></div><label className="discount-field">Custom discount<input type="number" min="0" max={total} step="0.01" value={discount} disabled={!canApplyDiscounts} onChange={event => setDiscount(event.target.value)} placeholder={canApplyDiscounts ? '0.00' : 'Owner permission required'}/>{!canApplyDiscounts && <small className="muted">Your role cannot apply checkout discounts.</small>}</label><div className="payment-methods">{['UPI', 'Cash', 'Card'].map(item => <button key={item} className={method === item ? 'selected' : ''} onClick={() => setMethod(item)}>{item}</button>)}</div>{method === 'UPI' && <div className="upi-panel">{upiLink ? <QRCodeSVG value={upiLink} size={130}/>: <div className="qr-placeholder">QR</div>}<p>{safeBranding.upi_id ? `Pay ${safeBranding.store_name} via UPI` : 'Add a UPI ID in Settings to enable checkout QR'}</p>{upiLink && <a href={upiLink}>Open UPI payment · {safeBranding.upi_id}</a>}</div>}<button className="primary-btn full" onClick={() => onComplete({ payment: method, discount: canApplyDiscounts ? discount : 0 })}><Icon name="check" size={16}/> Mark {method} paid</button></section></div> }
@@ -1021,7 +1116,7 @@ function CustomerShop({ catalog, branding, invoices, user, onOrder }) {
     if (!cart.length) return
     setBusy(true)
     const orderId = `ORD-${String(1001 + invoices.length + cartCount).padStart(5, '0')}`
-    const saved = await onOrder({ customer: user.name, customer_id: user.id, items: cart, subtotal, tax, total, payment: paymentChoice === 'Pay Online Now' ? 'Online' : 'Cash', status: 'Pending', delivery_address: deliveryAddress, pickup_window: pickupWindow, order_id: orderId })
+    const saved = await onOrder({ web_order: true, customer: user.name, customer_id: user.id, items: cart, subtotal, tax, total, payment: paymentChoice === 'Pay Online Now' ? 'Online' : 'Cash', status: 'Pending', delivery_address: deliveryAddress, pickup_window: pickupWindow, order_id: orderId, qr_token: orderId })
     setBusy(false)
     if (saved) { setConfirmation({ orderId, pickupWindow, paymentChoice, total, qrValue: `${window.location.origin}/claim/${orderId}` }); setCart([]); setDeliveryAddress(''); setSelectedProduct(null); setCheckoutOpen(false) }
   }
@@ -1211,6 +1306,33 @@ function App() { const [user, setUser] = useState(() => supabase ? null : getDem
   }
   const createInvoice = async data => {
     const invoiceNumber = `INV-${1050 + invoices.length}`
+    const workspaceId = data.workspace_id || user?.workspace_id
+    let webOrderCreated = false
+    if (supabase && data.web_order) {
+      const orderPayload = {
+        workspace_id: workspaceId,
+        order_id: data.order_id,
+        customer_id: data.web_order ? null : (data.customer_id || null),
+        customer_name: String(data.customer || 'Customer'),
+        status: 'pending',
+        pickup_window: String(data.pickup_window || 'Ready in 30 mins'),
+        pickup_time: data.pickup_time || null,
+        payment_method: String(data.payment || 'Cash'),
+        payment_status: data.payment === 'Online' ? 'paid' : 'pending',
+        subtotal: Number(data.subtotal || 0),
+        tax: Number(data.tax || 0),
+        total: Number(data.total || 0),
+        qr_token: String(data.order_id)
+      }
+      const { data: webOrder, error: orderError } = await supabase.from('web_orders').insert(orderPayload).select('*').single()
+      if (orderError) { toast.error(`Failed to create pickup order: ${orderError.message}`); return false }
+      webOrderCreated = Boolean(webOrder)
+      if (webOrderCreated && data.items?.length) {
+        const itemRows = data.items.map(item => ({ order_id: webOrder.id, workspace_id: workspaceId, product_id: item.id || null, product_name: String(item.name || ''), quantity: Number(item.quantity || 0), unit_price: Number(item.price || 0), tax_rate: Number(item.tax || item.tax_rate || 0) }))
+        const { error: itemError } = await supabase.from('web_order_items').insert(itemRows)
+        if (itemError) { toast.error(`Order created, but packing list failed: ${itemError.message}`); return false }
+      }
+    }
     if (supabase) {
       const payload = {
         invoice_number: invoiceNumber,
@@ -1221,14 +1343,17 @@ function App() { const [user, setUser] = useState(() => supabase ? null : getDem
         total: Number(data.total || 0),
         status: String(data.status || 'Paid'),
         payment_method: String(data.payment || 'Cash'),
-        ...((data.workspace_id || user?.workspace_id) ? { workspace_id: data.workspace_id || user.workspace_id } : {})
+        ...((workspaceId) ? { workspace_id: workspaceId } : {})
       }
       const { data: created, error } = await supabase.from('invoices').insert(payload).select('*').single()
-      if (error) { toast.error(`Failed to create invoice: ${error.message}`); return false }
+      if (error) {
+        if (!webOrderCreated) { toast.error(`Failed to create invoice: ${error.message}`); return false }
+        console.warn('Invoice mirror could not be created for web order:', error.message)
+      }
       if (data.items?.length && created?.id) {
-        const lines = data.items.map(item => ({ invoice_id: created.id, product_id: item.id || null, product_name: String(item.name || ''), quantity: Number(item.quantity || 0), unit_price: Number(item.price || 0), tax_rate: Number(item.tax || item.tax_rate || 0), line_total: Number(item.price || 0) * Number(item.quantity || 0) * (1 + Number(item.tax || item.tax_rate || 0) / 100) }))
+        const lines = data.items.map(item => ({ invoice_id: created.id, workspace_id: workspaceId, product_id: item.id || null, product_name: String(item.name || ''), quantity: Number(item.quantity || 0), unit_price: Number(item.price || 0), tax_rate: Number(item.tax || item.tax_rate || 0), line_total: Number(item.price || 0) * Number(item.quantity || 0) * (1 + Number(item.tax || item.tax_rate || 0) / 100) }))
         const { error: lineError } = await supabase.from('invoice_items').insert(lines)
-        if (lineError) { toast.error(`Invoice created, but line items failed: ${lineError.message}`); return false }
+        if (lineError && !webOrderCreated) { toast.error(`Invoice created, but line items failed: ${lineError.message}`); return false }
       }
     }
     const stockResult = await decrementStock(data.items || [], user?.workspace_id)
@@ -1240,6 +1365,6 @@ function App() { const [user, setUser] = useState(() => supabase ? null : getDem
     return true
   }
   if (!authReady) return <StartupScreen />
-  return <BrowserRouter>{user ? <Layout user={user} darkMode={darkMode} onToggleTheme={() => setDarkMode(value => !value)} onLogout={async () => { await supabase?.auth.signOut(); localStorage.removeItem('billflow-user'); setUser(null) }}><Routes><Route path="/" element={<Protected user={user} roles={['Owner']}><Overview invoices={invoices} catalog={catalog}/></Protected>}/><Route path="/pos" element={<Protected user={user} roles={['Owner', 'Employee']}><ErrorBoundary><POS onInvoice={createInvoice} catalog={catalog} user={user} permissions={user.permissions || profilePermissions(user)} branding={branding}/></ErrorBoundary></Protected>}/><Route path="/invoices" element={<Invoices invoices={invoices}/>}/><Route path="/reset-password" element={<ResetPassword/>}/><Route path="/claim/:orderId" element={<ClaimOrder/>}/><Route path="/invoice/:id" element={<InvoiceDetail invoices={invoices} branding={branding}/>}/><Route path="/receipt/:id" element={<InvoiceDetail invoices={invoices} branding={branding}/>}/><Route path="/inventory" element={<Protected user={user} roles={['Owner', 'Employee']}>{user.role === 'Owner' || user.permissions?.can_edit_inventory ? <Inventory catalog={catalog} onCreate={createProduct} onUpdate={updateProduct} onDelete={deleteProduct} onAdjustStock={adjustStock}/> : <SimplePage title="Inventory access restricted" text="Your owner can grant inventory editing permission from Settings." icon="barcode"/>}</Protected>}/><Route path="/customers" element={<Protected user={user} roles={['Owner', 'Employee', 'Customer']}>{user.role === 'Customer' ? <CustomerMarketplace user={user} onOrder={createInvoice}/> : <CustomerDirectory invoices={invoices} user={user}/> }</Protected>}/><Route path="/reports" element={<Protected user={user} roles={['Owner']}><Reports invoices={invoices}/></Protected>}/><Route path="/settings" element={<Protected user={user} roles={['Owner']}><Settings branding={branding} onSaveBranding={saveBranding} staff={staff} onCreateStaff={createStaff} onUpdateStaff={updateStaff} onDeactivate={deactivateStaff}/></Protected>}/><Route path="*" element={<Navigate to="/invoices" replace/>}/></Routes></Layout> : <Routes><Route path="/" element={<Landing/>}/><Route path="/login" element={<Auth initialMode="login" onAuth={nextUser => { localStorage.setItem('billflow-user', JSON.stringify(nextUser)); setUser(nextUser) }}/>}/><Route path="/reset-password" element={<ResetPassword/>}/><Route path="/claim/:orderId" element={<ClaimOrder/>}/><Route path="/signup" element={<Auth initialMode="signup" onAuth={nextUser => { localStorage.setItem('billflow-user', JSON.stringify(nextUser)); setUser(nextUser) }}/>}/><Route path="/invoice/:id" element={<InvoiceDetail invoices={invoices} branding={branding}/>}/><Route path="/receipt/:id" element={<InvoiceDetail invoices={invoices} branding={branding}/>}/><Route path="*" element={<Navigate to="/" replace/>}/></Routes>}<Toaster position="bottom-right"/></BrowserRouter> }
+  return <BrowserRouter>{user ? <Layout user={user} darkMode={darkMode} onToggleTheme={() => setDarkMode(value => !value)} onLogout={async () => { await supabase?.auth.signOut(); localStorage.removeItem('billflow-user'); setUser(null) }}><Routes><Route path="/" element={<Protected user={user} roles={['Owner']}><Overview invoices={invoices} catalog={catalog}/></Protected>}/><Route path="/pos" element={<Protected user={user} roles={['Owner', 'Employee']}><ErrorBoundary><POS onInvoice={createInvoice} catalog={catalog} user={user} permissions={user.permissions || profilePermissions(user)} branding={branding}/></ErrorBoundary></Protected>}/><Route path="/web-orders" element={<Protected user={user} roles={['Owner', 'Employee']}><ErrorBoundary><WebOrders user={user}/></ErrorBoundary></Protected>}/><Route path="/invoices" element={<Invoices invoices={invoices}/>}/><Route path="/reset-password" element={<ResetPassword/>}/><Route path="/claim/:orderId" element={<ClaimOrder/>}/><Route path="/invoice/:id" element={<InvoiceDetail invoices={invoices} branding={branding}/>}/><Route path="/receipt/:id" element={<InvoiceDetail invoices={invoices} branding={branding}/>}/><Route path="/inventory" element={<Protected user={user} roles={['Owner', 'Employee']}>{user.role === 'Owner' || user.permissions?.can_edit_inventory ? <Inventory catalog={catalog} onCreate={createProduct} onUpdate={updateProduct} onDelete={deleteProduct} onAdjustStock={adjustStock}/> : <SimplePage title="Inventory access restricted" text="Your owner can grant inventory editing permission from Settings." icon="barcode"/>}</Protected>}/><Route path="/customers" element={<Protected user={user} roles={['Owner', 'Employee', 'Customer']}>{user.role === 'Customer' ? <CustomerMarketplace user={user} onOrder={createInvoice}/> : <CustomerDirectory invoices={invoices} user={user}/> }</Protected>}/><Route path="/reports" element={<Protected user={user} roles={['Owner']}><Reports invoices={invoices}/></Protected>}/><Route path="/settings" element={<Protected user={user} roles={['Owner']}><Settings branding={branding} onSaveBranding={saveBranding} staff={staff} onCreateStaff={createStaff} onUpdateStaff={updateStaff} onDeactivate={deactivateStaff}/></Protected>}/><Route path="*" element={<Navigate to="/invoices" replace/>}/></Routes></Layout> : <Routes><Route path="/" element={<Landing/>}/><Route path="/login" element={<Auth initialMode="login" onAuth={nextUser => { localStorage.setItem('billflow-user', JSON.stringify(nextUser)); setUser(nextUser) }}/>}/><Route path="/reset-password" element={<ResetPassword/>}/><Route path="/claim/:orderId" element={<ClaimOrder/>}/><Route path="/signup" element={<Auth initialMode="signup" onAuth={nextUser => { localStorage.setItem('billflow-user', JSON.stringify(nextUser)); setUser(nextUser) }}/>}/><Route path="/invoice/:id" element={<InvoiceDetail invoices={invoices} branding={branding}/>}/><Route path="/receipt/:id" element={<InvoiceDetail invoices={invoices} branding={branding}/>}/><Route path="*" element={<Navigate to="/" replace/>}/></Routes>}<Toaster position="bottom-right"/></BrowserRouter> }
 
 createRoot(document.getElementById('root')).render(<ErrorBoundary><App /></ErrorBoundary>)
