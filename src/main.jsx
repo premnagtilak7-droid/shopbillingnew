@@ -77,13 +77,18 @@ const normalizeBranding = value => ({ ...defaultBranding, ...(value || {}) })
 
 async function loadWorkspaceBranding(workspaceId) {
   if (!supabase || !workspaceId) return defaultBranding
-  const { data, error } = await supabase.from('workspace_settings').select('store_name, tagline, address, contact_phone, contact_email, tax_id, upi_id, logo_url, footer_note').eq('workspace_id', workspaceId).maybeSingle()
+  const { data, error } = await supabase.from('workspace_settings').select('store_name, tagline, address, contact_phone, contact_email, tax_id, upi_id, logo_url, footer_note, marketplace_published, latitude, longitude, opening_hours, delivery_available, delivery_radius_km').eq('workspace_id', workspaceId).maybeSingle()
   if (error) { console.warn('Workspace branding lookup failed:', error.message); return defaultBranding }
   return normalizeBranding(data)
 }
 
-async function loadMarketplaceShops() {
+async function loadMarketplaceShops(userCoords = null) {
   if (!supabase) return []
+  if (userCoords?.latitude != null && userCoords?.longitude != null) {
+    const nearby = await supabase.rpc('get_nearby_shops', { user_lat: Number(userCoords.latitude), user_lng: Number(userCoords.longitude), radius_meters: 40000 })
+    if (!nearby.error && nearby.data) return nearby.data.map(item => ({ ...normalizeBranding(item), ...item, distance: Number(item.distance_meters || 0) / 1000 }))
+    if (nearby.error) console.warn('Nearby shop RPC unavailable, using workspace lookup:', nearby.error.message)
+  }
   const fields = 'workspace_id, store_name, tagline, address, contact_phone, contact_email, logo_url, marketplace_published, latitude, longitude, opening_hours, delivery_available, delivery_radius_km'
   const { data, error } = await supabase.from('workspace_settings').select(fields).eq('marketplace_published', true).order('store_name')
   if (error) { console.warn('Marketplace shops lookup failed:', error.message); return [] }
@@ -1112,7 +1117,12 @@ function CustomerMarketplace({ user, onOrder }) {
 
   const useLocation = () => {
     if (!navigator.geolocation) return toast.error('Location is not available in this browser')
-    navigator.geolocation.getCurrentPosition(position => { setUserCoords({ latitude: position.coords.latitude, longitude: position.coords.longitude }); setLocation('Near my current location') }, () => toast.error('Allow location access or search by area'))
+    navigator.geolocation.getCurrentPosition(position => {
+      const coords = { latitude: position.coords.latitude, longitude: position.coords.longitude }
+      setUserCoords(coords)
+      setLocation('Near my current location')
+      loadMarketplaceShops(coords).then(data => { if (data.length) setShops(data) })
+    }, () => toast.error('Allow location access or search by area'))
   }
 
   const shopCard = shop => <article className="shop-directory-card" key={shop.workspace_id}><div className="shop-directory-cover">{shop.logo_url ? <img src={shop.logo_url} alt={`${shop.store_name} logo`}/> : <span>B</span>}<em>{shop.delivery_available ? 'Delivery available' : 'Pickup available'}</em></div><div className="shop-directory-copy"><div className="shop-card-topline"><span className="shop-status-dot"/> {shop.is_open === false ? 'Closed now' : 'Open now'}<b>{shop.distance != null ? `${shop.distance.toFixed(1)} km away` : 'Nearby shop'}</b></div><p className="eyebrow">{shop.categories || 'HARDWARE SHOP'}</p><h3>{shop.store_name}</h3><p>{shop.tagline || 'Tools, fittings, supplies and everyday hardware.'}</p><div className="shop-card-rating"><span>★ {shop.rating ? Number(shop.rating).toFixed(1) : 'New'}</span><small>{shop.address || 'Address available after opening shop'}</small></div><button className="primary-btn full" onClick={() => setSelectedShop(shop)}>View Catalog <Icon name="arrow" size={14}/></button></div></article>
