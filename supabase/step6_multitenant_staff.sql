@@ -128,3 +128,20 @@ CREATE INDEX IF NOT EXISTS customers_workspace_name_idx
   ON public.customers(workspace_id, full_name);
 CREATE INDEX IF NOT EXISTS customers_workspace_company_idx
   ON public.customers(workspace_id, company_name);
+
+-- Marketplace shop discovery metadata.
+ALTER TABLE public.workspace_settings
+  ADD COLUMN IF NOT EXISTS marketplace_published boolean NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS latitude numeric,
+  ADD COLUMN IF NOT EXISTS longitude numeric,
+  ADD COLUMN IF NOT EXISTS opening_hours text NOT NULL DEFAULT 'Mon-Sat · 9:00 AM-8:00 PM',
+  ADD COLUMN IF NOT EXISTS delivery_available boolean NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS delivery_radius_km numeric NOT NULL DEFAULT 5;
+
+DROP POLICY IF EXISTS "Customers can discover published shops" ON public.workspace_settings;
+CREATE POLICY "Customers can discover published shops"
+ON public.workspace_settings FOR SELECT TO authenticated
+USING (marketplace_published = true OR workspace_id = public.current_workspace_id());
+
+CREATE INDEX IF NOT EXISTS workspace_settings_marketplace_idx
+  ON public.workspace_settings(marketplace_published, store_name);
