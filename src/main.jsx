@@ -1471,8 +1471,20 @@ function App() { const [user, setUser] = useState(() => supabase ? null : getDem
   }))
   const saveBranding = async nextBranding => {
     const next = normalizeBranding(nextBranding)
-    if (!supabase) { setBranding(next); toast.success('Branding saved in preview mode'); return true }
-    const { data, error } = await supabase.from('workspace_settings').upsert({ workspace_id: user.workspace_id, ...next }, { onConflict: 'workspace_id' }).select('*').single()
+    const parseCoordinate = (value, min, max) => {
+      if (value === '' || value == null) return null
+      const parsed = Number(value)
+      return Number.isFinite(parsed) && parsed >= min && parsed <= max ? parsed : NaN
+    }
+    const latitude = parseCoordinate(next.latitude, -90, 90)
+    const longitude = parseCoordinate(next.longitude, -180, 180)
+    if (Number.isNaN(latitude) || Number.isNaN(longitude)) {
+      toast.error('Store coordinates must be valid numbers between -90/90 and -180/180.')
+      return false
+    }
+    const sanitized = { ...next, latitude, longitude, delivery_radius_km: Number(next.delivery_radius_km || 0) }
+    if (!supabase) { setBranding(sanitized); toast.success('Branding saved in preview mode'); return true }
+    const { data, error } = await supabase.from('workspace_settings').upsert({ workspace_id: user.workspace_id, ...sanitized }, { onConflict: 'workspace_id' }).select('*').single()
     if (error) {
       const schemaSetupRequired = /workspace_settings|schema cache|relation .* does not exist/i.test(error.message || '')
       toast.error(schemaSetupRequired ? 'Supabase setup required: run supabase/step10_workspace_settings_repair.sql in the connected project, then retry Save Profile.' : `Failed to save branding: ${error.message}`)
@@ -1571,6 +1583,32 @@ function App() { const [user, setUser] = useState(() => supabase ? null : getDem
     const invoiceNumber = `INV-${1050 + invoices.length}`
     const workspaceId = data.workspace_id || user?.workspace_id
     let webOrderCreated = false
+    if (supabase && !data.web_order) {
+      const atomicInvoice = {
+        invoice_number: invoiceNumber,
+        workspace_id: workspaceId,
+        customer_name: String(data.customer || 'Walk-in customer'),
+        customer_id: data.customer_id || null,
+        created_by_staff_id: user.id,
+        subtotal: Number(data.subtotal || 0),
+        tax: Number(data.tax || 0),
+        total: Number(data.total || 0),
+        status: String(data.status || 'Paid'),
+        payment_method: String(data.payment || 'Cash')
+      }
+      const atomicItems = (data.items || []).map(item => ({ product_id: item.id || null, sku: item.sku || '', name: item.name || 'Item', quantity: Number(item.quantity || 0), price: Number(item.price || 0), tax: Number(item.tax || item.tax_rate || 0) }))
+      const { data: sale, error: saleError } = await supabase.rpc('create_pos_sale', { p_invoice: atomicInvoice, p_items: atomicItems })
+      if (saleError) {
+        const message = /insufficient stock/i.test(saleError.message || '') ? saleError.message : `Atomic checkout is not configured. Apply supabase/step11_atomic_pos_checkout.sql in Supabase. ${saleError.message || ''}`
+        toast.error(message)
+        return false
+      }
+      const invoice = { ...data, id: invoiceNumber, date: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }), created_at: new Date().toISOString() }
+      setInvoices(prev => [invoice, ...prev])
+      updateCatalogStocks(sale?.stock_updates || [])
+      toast.success('Invoice Generated — Stock Updated')
+      return true
+    }
     if (supabase && data.web_order) {
       const orderPayload = {
         workspace_id: workspaceId,
