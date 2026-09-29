@@ -1457,7 +1457,11 @@ function App() { const [user, setUser] = useState(() => supabase ? null : getDem
     const next = normalizeBranding(nextBranding)
     if (!supabase) { setBranding(next); toast.success('Branding saved in preview mode'); return true }
     const { data, error } = await supabase.from('workspace_settings').upsert({ workspace_id: user.workspace_id, ...next }, { onConflict: 'workspace_id' }).select('*').single()
-    if (error) { toast.error(`Failed to save branding: ${error.message}`); return false }
+    if (error) {
+      const schemaSetupRequired = /workspace_settings|schema cache|relation .* does not exist/i.test(error.message || '')
+      toast.error(schemaSetupRequired ? 'Supabase setup required: run supabase/step10_workspace_settings_repair.sql in the connected project, then retry Save Profile.' : `Failed to save branding: ${error.message}`)
+      return false
+    }
     setBranding(normalizeBranding(data)); toast.success('Store branding saved'); return true
   }
   const createStaff = async details => {
