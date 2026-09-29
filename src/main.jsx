@@ -141,6 +141,22 @@ async function insertProductWithSchemaFallback(payload) {
   return { data: null, error: new Error('The products table has too many unsupported columns. Check its schema.') }
 }
 
+async function insertInvoiceItemsWithSchemaFallback(rows) {
+  let candidate = rows.map(row => ({ ...row }))
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const result = await supabase.from('invoice_items').insert(candidate)
+    if (!result.error) return result
+    const column = missingColumnName(result.error)
+    if (!isMissingProductColumn(result.error) || !column || !(column in candidate[0])) return result
+    candidate = candidate.map(row => {
+      const next = { ...row }
+      delete next[column]
+      return next
+    })
+  }
+  return { error: new Error('The invoice_items table has too many unsupported columns. Check its schema.') }
+}
+
 async function updateProductWithSchemaFallback(product, target, id, workspaceId) {
   let candidate = { ...product }
   for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -1599,7 +1615,7 @@ function App() { const [user, setUser] = useState(() => supabase ? null : getDem
       }
       if (data.items?.length && created?.id) {
         const lines = data.items.map(item => ({ invoice_id: created.id, workspace_id: workspaceId, product_id: item.id || null, product_name: String(item.name || ''), quantity: Number(item.quantity || 0), unit_price: Number(item.price || 0), tax_rate: Number(item.tax || item.tax_rate || 0), line_total: Number(item.price || 0) * Number(item.quantity || 0) * (1 + Number(item.tax || item.tax_rate || 0) / 100) }))
-        const { error: lineError } = await supabase.from('invoice_items').insert(lines)
+        const { error: lineError } = await insertInvoiceItemsWithSchemaFallback(lines)
         if (lineError && !webOrderCreated) { toast.error(`Invoice created, but line items failed: ${lineError.message}`); return false }
       }
     }
