@@ -1478,16 +1478,16 @@ function App() { const [user, setUser] = useState(() => supabase ? null : getDem
     }
     const latitude = parseCoordinate(next.latitude, -90, 90)
     const longitude = parseCoordinate(next.longitude, -180, 180)
-    if (Number.isNaN(latitude) || Number.isNaN(longitude)) {
-      toast.error('Store coordinates must be valid numbers between -90/90 and -180/180.')
+    const deliveryRadius = parseCoordinate(next.delivery_radius_km, 0, Number.MAX_SAFE_INTEGER)
+    if (Number.isNaN(latitude) || Number.isNaN(longitude) || Number.isNaN(deliveryRadius)) {
+      toast.error('Latitude, longitude, and delivery radius must be valid numbers.')
       return false
     }
-    const sanitized = { ...next, latitude, longitude, delivery_radius_km: Number(next.delivery_radius_km || 0) }
+    const sanitized = { ...next, latitude, longitude, delivery_radius_km: deliveryRadius }
     if (!supabase) { setBranding(sanitized); toast.success('Branding saved in preview mode'); return true }
     const { data, error } = await supabase.from('workspace_settings').upsert({ workspace_id: user.workspace_id, ...sanitized }, { onConflict: 'workspace_id' }).select('*').single()
     if (error) {
-      const schemaSetupRequired = /workspace_settings|schema cache|relation .* does not exist/i.test(error.message || '')
-      toast.error(schemaSetupRequired ? 'Supabase setup required: run supabase/step10_workspace_settings_repair.sql in the connected project, then retry Save Profile.' : `Failed to save branding: ${error.message}`)
+      toast.error(error.message || 'Unable to save store profile.')
       return false
     }
     setBranding(normalizeBranding(data)); toast.success('Store branding saved'); return true
